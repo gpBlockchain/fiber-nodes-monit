@@ -118,6 +118,8 @@ type PaymentSearchMatch = {
   directionLabel: string
   statusLabel: string
   forwardingLabel: string | null
+  isExpired: boolean
+  expiryVal: number
 }
 
 
@@ -482,6 +484,7 @@ function App() {
 
   const pendingTlcRows = useMemo(() => {
     if (!details?.channels?.length) return []
+    const now = Date.now()
     const rows: {
       channelIdShort: string
       channelStateLabel: string
@@ -493,6 +496,8 @@ function App() {
       paymentHashLabel: string
       paymentHashRaw: string | null
       forwardingLabel: string | null
+      expiryVal: number
+      isExpired: boolean
     }[] = []
     for (const channel of details.channels) {
       const chObj = asObj(channel)
@@ -510,6 +515,8 @@ function App() {
             : formatJson(tlcIdRaw ?? '—')
         const amountLabel = formatAmountWithHex(tlc.amount)
         const expiryLabel = hexMillisToLocalTimeLabel(tlc.expiry)
+        const expiryVal = hexToNumberMaybe(tlc.expiry) ?? 0
+        const isExpired = expiryVal > 0 && expiryVal < now
         const paymentHashRaw = tlc.payment_hash
         const paymentHashLabel =
           typeof paymentHashRaw === 'string'
@@ -541,9 +548,21 @@ function App() {
           paymentHashLabel,
           paymentHashRaw: typeof paymentHashRaw === 'string' ? paymentHashRaw : null,
           forwardingLabel,
+          expiryVal,
+          isExpired,
         })
       }
     }
+    // Sort: expiry (desc), then direction (Inbound first)
+    rows.sort((a, b) => {
+      if (a.expiryVal !== b.expiryVal) {
+        return b.expiryVal - a.expiryVal
+      }
+      // '入站' (Inbound) should come before '出站' (Outbound)
+      const dirA = a.directionLabel === '入站' ? 0 : 1
+      const dirB = b.directionLabel === '入站' ? 0 : 1
+      return dirA - dirB
+    })
     return rows
   }, [details])
 
@@ -607,6 +626,8 @@ function App() {
                 : formatJson(tlcIdRaw ?? '—')
             const amountLabel = formatAmountWithHex(tlc.amount)
             const expiryLabel = hexMillisToLocalTimeLabel(tlc.expiry)
+            const expiryVal = hexToNumberMaybe(tlc.expiry) ?? 0
+            const isExpired = expiryVal > 0 && expiryVal < Date.now()
             const statusInfo = parseTlcStatus(tlc.status)
 
             const forwardingChannelRaw = tlc.forwarding_channel_id
@@ -636,6 +657,8 @@ function App() {
               directionLabel: statusInfo.direction,
               statusLabel: statusInfo.label,
               forwardingLabel,
+              isExpired,
+              expiryVal,
             })
           }
         }
@@ -650,6 +673,17 @@ function App() {
       )
 
       const flat = perNode.flat()
+      
+      // Sort: expiry (desc), then direction (Inbound first)
+      flat.sort((a, b) => {
+        if (a.expiryVal !== b.expiryVal) {
+          return b.expiryVal - a.expiryVal
+        }
+        const dirA = a.directionLabel === '入站' ? 0 : 1
+        const dirB = b.directionLabel === '入站' ? 0 : 1
+        return dirA - dirB
+      })
+
       setPaymentSearchResults(flat)
       setPaymentSearchState({ status: 'done' })
     } catch (err) {
@@ -1233,10 +1267,16 @@ function App() {
                   </span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  {Object.entries(groupedPendingTlcs).map(([hash, rows]) => (
-                    <div key={hash} style={{ border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
-                      <div
-                        style={{
+                  {Object.entries(groupedPendingTlcs)
+                    .sort(([, rowsA], [, rowsB]) => {
+                      const expA = rowsA[0]?.expiryVal ?? 0
+                      const expB = rowsB[0]?.expiryVal ?? 0
+                      return expB - expA
+                    })
+                    .map(([hash, rows]) => (
+                      <div key={hash} style={{ border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+                        <div
+                          style={{
                           padding: '8px 12px',
                           background: 'var(--bg-sub)',
                           borderBottom: '1px solid var(--line)',
@@ -1301,7 +1341,14 @@ function App() {
                               <td className="monoSmall">{row.tlcId}</td>
                               <td>{row.directionLabel}</td>
                               <td className="monoSmall">{row.amountLabel}</td>
-                              <td className="monoSmall">{row.expiryLabel}</td>
+                              <td className="monoSmall">
+                                {row.expiryLabel}
+                                {row.isExpired ? (
+                                  <span style={{ color: 'var(--color-danger)', marginLeft: 4, fontSize: 10 }}>
+                                    (已过期)
+                                  </span>
+                                ) : null}
+                              </td>
                               <td className="monoSmall">{row.statusLabel}</td>
                               <td className="monoSmall">
                                 {row.forwardingLabel ?? <span className="dim">—</span>}
@@ -1458,7 +1505,14 @@ function App() {
                             <td className="monoSmall">{row.tlcId}</td>
                             <td>{row.directionLabel}</td>
                             <td className="monoSmall">{row.amountLabel}</td>
-                            <td className="monoSmall">{row.expiryLabel}</td>
+                            <td className="monoSmall">
+                              {row.expiryLabel}
+                              {row.isExpired ? (
+                                <span style={{ color: 'var(--color-danger)', marginLeft: 4, fontSize: 10 }}>
+                                  (已过期)
+                                </span>
+                              ) : null}
+                            </td>
                             <td className="monoSmall">{row.statusLabel}</td>
                             <td className="monoSmall">
                               {row.forwardingLabel ?? <span className="dim">—</span>}
