@@ -1186,14 +1186,20 @@ function App() {
             {pendingTlcRows.length ? (
               <div
                 className="cardBody"
-                style={{ borderTop: '1px solid var(--line)', maxHeight: 260, overflow: 'auto' }}
+                style={{
+                  borderTop: '1px solid var(--line)',
+                  maxHeight: '60vh',
+                  minHeight: 260,
+                  overflow: 'auto',
+                  padding: '12px 16px',
+                }}
               >
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    marginBottom: 6,
+                    marginBottom: 10,
                   }}
                 >
                   <div className="muted" style={{ fontSize: 11 }}>
@@ -1203,7 +1209,7 @@ function App() {
                     {pendingTlcRows.length} pending
                   </span>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 12 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                   {Object.entries(groupedPendingTlcs).map(([hash, rows]) => (
                     <div key={hash} style={{ border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
                       <div
