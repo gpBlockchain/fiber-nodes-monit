@@ -1,0 +1,444 @@
+.appShell {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+}
+
+.side {
+  position: relative;
+  padding: 20px 16px 16px;
+  border-right: 1px solid var(--line);
+  background: linear-gradient(
+    180deg,
+    rgba(10, 14, 26, 0.78),
+    rgba(8, 10, 18, 0.60)
+  );
+  backdrop-filter: blur(16px);
+  overflow: hidden;
+}
+
+.side::before {
+  content: "";
+  position: absolute;
+  inset: -200px -150px auto auto;
+  width: 520px;
+  height: 520px;
+  background: radial-gradient(circle at 30% 30%, rgba(124, 255, 214, 0.10), transparent 60%),
+    radial-gradient(circle at 60% 40%, rgba(138, 125, 255, 0.12), transparent 62%);
+  filter: blur(8px);
+  opacity: 0.9;
+}
+
+.brand {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.brandTitle {
+  font-family: "Bebas Neue", system-ui, sans-serif;
+  letter-spacing: 0.12em;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.brandSubtitle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sideActions {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(18, 24, 44, 0.68), rgba(10, 12, 20, 0.72));
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 10px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+  box-shadow: var(--shadow-soft);
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(124, 255, 214, 0.35);
+}
+
+.btn:active {
+  transform: translateY(0px);
+}
+
+.btnGhost {
+  background: rgba(10, 12, 20, 0.48);
+  box-shadow: none;
+}
+
+.nodeList {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding-right: 2px;
+  overflow: auto;
+  max-height: calc(100vh - 200px);
+}
+
+.nodeCard {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 12px;
+  background: rgba(10, 12, 20, 0.55);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+}
+
+.nodeCard:hover {
+  transform: translateY(-1px);
+  border-color: rgba(138, 125, 255, 0.35);
+  background: rgba(12, 15, 26, 0.62);
+}
+
+.nodeCardActive {
+  border-color: rgba(124, 255, 214, 0.55);
+  background: rgba(12, 16, 30, 0.75);
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  align-self: center;
+  background: rgba(244, 247, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(244, 247, 255, 0.10) inset;
+}
+
+.dotOk {
+  background: radial-gradient(circle at 30% 30%, rgba(124, 255, 214, 1), rgba(124, 255, 214, 0.3));
+  box-shadow: 0 0 0 1px rgba(124, 255, 214, 0.28) inset, 0 0 22px rgba(124, 255, 214, 0.28);
+}
+
+.dotBad {
+  background: radial-gradient(circle at 30% 30%, rgba(255, 77, 109, 1), rgba(255, 77, 109, 0.3));
+  box-shadow: 0 0 0 1px rgba(255, 77, 109, 0.28) inset, 0 0 22px rgba(255, 77, 109, 0.25);
+}
+
+.nodeMeta {
+  display: grid;
+  gap: 4px;
+}
+
+.nodeNameRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.nodeName {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.nodeUrl {
+  color: var(--dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(12, 14, 22, 0.6);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.main {
+  position: relative;
+  padding: 18px 18px 18px 18px;
+  overflow: auto;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.titleBlock {
+  display: grid;
+  gap: 6px;
+}
+
+.title {
+  font-family: "Bebas Neue", system-ui, sans-serif;
+  letter-spacing: 0.11em;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mainActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.layout {
+  display: grid;
+  gap: 14px;
+}
+
+.grid2 {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.cardHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(10, 12, 20, 0.45);
+}
+
+.cardTitle {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(244, 247, 255, 0.78);
+}
+
+.cardBody {
+  padding: 12px 14px 14px;
+}
+
+.kvGrid {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 8px 12px;
+  align-items: baseline;
+}
+
+.k {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.v {
+  color: var(--ink);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid rgba(200, 220, 255, 0.10);
+  padding: 10px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  color: rgba(244, 247, 255, 0.72);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.pill {
+  display: inline-flex;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(200, 220, 255, 0.18);
+  background: rgba(10, 12, 20, 0.55);
+  color: rgba(244, 247, 255, 0.80);
+  font-size: 11px;
+}
+
+.pillOk {
+  border-color: rgba(124, 255, 214, 0.35);
+  background: rgba(124, 255, 214, 0.08);
+  color: rgba(174, 255, 235, 0.95);
+}
+
+.pillBad {
+  border-color: rgba(255, 77, 109, 0.35);
+  background: rgba(255, 77, 109, 0.08);
+  color: rgba(255, 179, 196, 0.95);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.dim {
+  color: var(--dim);
+}
+
+.monoSmall {
+  font-size: 11px;
+  color: rgba(244, 247, 255, 0.78);
+  word-break: break-all;
+}
+
+.dangerRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid rgba(255, 77, 109, 0.25);
+  background: rgba(255, 77, 109, 0.06);
+  border-radius: 16px;
+  padding: 10px 12px;
+}
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(8px);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  z-index: 50;
+}
+
+.modal {
+  width: min(640px, 100%);
+  border: 1px solid var(--line2);
+  border-radius: 22px;
+  background: rgba(10, 12, 20, 0.85);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.modalHeader {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modalTitle {
+  font-family: "Bebas Neue", system-ui, sans-serif;
+  letter-spacing: 0.12em;
+  font-size: 22px;
+}
+
+.modalBody {
+  padding: 14px 16px 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.label {
+  color: rgba(244, 247, 255, 0.70);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(200, 220, 255, 0.18);
+  background: rgba(6, 8, 14, 0.6);
+  color: var(--ink);
+  outline: none;
+}
+
+.input:focus {
+  border-color: rgba(124, 255, 214, 0.45);
+  box-shadow: 0 0 0 4px rgba(124, 255, 214, 0.10);
+}
+
+.modalActions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 0 16px 16px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.smallNote {
+  color: rgba(244, 247, 255, 0.55);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+@media (max-width: 980px) {
+  .appShell {
+    grid-template-columns: 1fr;
+  }
+  .side {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+  .grid2 {
+    grid-template-columns: 1fr;
+  }
+  .nodeList {
+    max-height: none;
+  }
+}
