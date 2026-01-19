@@ -902,6 +902,7 @@ function App() {
                       <th>RPC</th>
                       <th>Peers</th>
                       <th>Channels</th>
+                      <th>Addresses</th>
                       <th>Chain Hash</th>
                       <th>Latency</th>
                       <th>Updated</th>
@@ -930,6 +931,20 @@ function App() {
                           <td className="monoSmall">{shorten(node.rpcUrl, 18, 10)}</td>
                           <td>{peersCount ?? '—'}</td>
                           <td>{channelsCount ?? '—'}</td>
+                          <td className="monoSmall">
+                            {(() => {
+                              const addrs = getArray(asObj(summary?.nodeInfo), 'addresses')
+                              if (!addrs || !addrs.length) return '—'
+                              return (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                  {addrs.map((a, idx) => {
+                                    const val = typeof a === 'string' ? a : (asObj(a).address as string) ?? formatJson(a)
+                                    return <div key={idx}>{val}</div>
+                                  })}
+                                </div>
+                              )
+                            })()}
+                          </td>
                           <td className="monoSmall">
                             {typeof chainHash === 'string' ? shorten(chainHash, 14, 10) : '—'}
                           </td>
