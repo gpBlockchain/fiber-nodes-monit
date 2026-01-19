@@ -333,6 +333,17 @@ function App() {
 
   const selectedSummary = selectedNode ? summaries[selectedNode.id] : undefined
 
+  const onlinePeerIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (details?.peers) {
+      for (const p of details.peers) {
+        const id = getString(p, 'peer_id')
+        if (id) ids.add(id)
+      }
+    }
+    return ids
+  }, [details?.peers])
+
   const pollSummaries = useCallback(async () => {
     if (!nodes.length) return
     setOverviewRefreshState({ status: 'refreshing' })
@@ -1125,7 +1136,19 @@ function App() {
                                 : formatJson(info.channel_id ?? '—')}
                             </td>
                             <td className="monoSmall">{isPublic ? 'yes' : 'no'}</td>
-                            <td className="monoSmall">{String(info.peer_id ?? '—')}</td>
+                            <td className="monoSmall">
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span>{String(info.peer_id ?? '—')}</span>
+                                {typeof info.peer_id === 'string' && (
+                                  <span
+                                    className={`pill ${onlinePeerIds.has(info.peer_id) ? 'pillOk' : 'dim'}`}
+                                    style={{ fontSize: 9, padding: '1px 4px', height: 'auto' }}
+                                  >
+                                    {onlinePeerIds.has(info.peer_id) ? 'Online' : 'Offline'}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="monoSmall">{stateLabel}</td>
                             <td className="monoSmall">{formatAmountWithHex(info.local_balance)}</td>
                             <td className="monoSmall">{formatAmountWithHex(info.remote_balance)}</td>
