@@ -241,6 +241,33 @@ async function fetchNodeDetails(node: MonitoredNode): Promise<NodeDetails> {
   }
 }
 
+function copyToClipboard(text: string) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch((err) => {
+      console.error('Clipboard write failed, trying fallback:', err)
+      fallbackCopy(text)
+    })
+  } else {
+    fallbackCopy(text)
+  }
+}
+
+function fallbackCopy(text: string) {
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  } catch (err) {
+    console.error('Fallback copy failed:', err)
+    alert('复制失败，请手动复制')
+  }
+}
+
 function App() {
   const [nodes, setNodes] = useState<MonitoredNode[]>(() => loadNodes())
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
@@ -1203,7 +1230,7 @@ function App() {
                             <button
                               className="btn btnGhost"
                               onClick={() => {
-                                void navigator.clipboard.writeText(hash)
+                                copyToClipboard(hash)
                               }}
                               style={{ padding: '4px 8px', borderRadius: 12, fontSize: 11 }}
                             >
