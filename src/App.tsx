@@ -674,13 +674,13 @@ function App() {
 
       const flat = perNode.flat()
       
-      // Sort: expiry (desc), then direction (Inbound first)
+      // Sort: expiry (desc), then direction (Outbound first)
       flat.sort((a, b) => {
         if (a.expiryVal !== b.expiryVal) {
           return b.expiryVal - a.expiryVal
         }
-        const dirA = a.directionLabel === '入站' ? 0 : 1
-        const dirB = b.directionLabel === '入站' ? 0 : 1
+        const dirA = a.directionLabel === '出站' ? 0 : 1
+        const dirB = b.directionLabel === '出站' ? 0 : 1
         return dirA - dirB
       })
 
