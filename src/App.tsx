@@ -122,6 +122,22 @@ type PaymentSearchMatch = {
   expiryVal: number
 }
 
+type ChannelOutpointSearchMatch = {
+  nodeName: string
+  nodeId: string
+  rpcUrl: string
+  channelIdShort: string
+  channelId: string
+  channelStateLabel: string
+  channelOutpoint: string
+  peerId: string
+  isPublic: boolean
+  localBalance: string
+  remoteBalance: string
+  enabled: boolean
+  createdAt: string
+}
+
 
 
 function useInterval(callback: () => void, delay: number | null) {
@@ -294,7 +310,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -310,6 +326,19 @@ function App() {
     total: 0,
   })
   const [paymentSearchResults, setPaymentSearchResults] = useState<PaymentSearchMatch[]>([])
+  const [channelOutpointQuery, setChannelOutpointQuery] = useState('')
+  const [channelOutpointSearchState, setChannelOutpointSearchState] = useState<{
+    status: 'idle' | 'searching' | 'done' | 'error';
+    error?: string
+  }>({ status: 'idle' })
+  const [channelOutpointSearchProgress, setChannelOutpointSearchProgress] = useState<{
+    completed: number;
+    total: number
+  }>({
+    completed: 0,
+    total: 0,
+  })
+  const [channelOutpointSearchResults, setChannelOutpointSearchResults] = useState<ChannelOutpointSearchMatch[]>([])
   const [rpcMethod, setRpcMethod] = useState('node_info')
   const [rpcParams, setRpcParams] = useState('{}')
   const [rpcState, setRpcState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
@@ -694,6 +723,98 @@ function App() {
     }
   }, [nodes, paymentHashQuery])
 
+  const runChannelOutpointSearch = useCallback(async () => {
+    const query = channelOutpointQuery.trim()
+    if (!query || !nodes.length) return
+
+    setChannelOutpointSearchState({ status: 'searching' })
+    setChannelOutpointSearchProgress({
+      completed: 0,
+      total: nodes.length,
+    })
+    setChannelOutpointSearchResults([])
+
+    try {
+      const perNode = await runWithConcurrency(
+        nodes,
+        10,
+        async (node: MonitoredNode) => {
+          const res = await callFiberRpc<{ channels: unknown[] }>(node, 'list_channels', {
+            include_closed: true,
+          })
+          const channels = Array.isArray(res?.channels) ? res.channels : []
+          const matches: ChannelOutpointSearchMatch[] = []
+
+          for (const channel of channels) {
+            const chObj = asObj(channel)
+            const channelOutpointRaw = chObj.channel_outpoint
+            if (!channelOutpointRaw) continue
+            
+            // 支持完整匹配或部分匹配（不区分大小写）
+            const outpointStr = typeof channelOutpointRaw === 'string' 
+              ? channelOutpointRaw 
+              : formatJson(channelOutpointRaw)
+            
+            if (!outpointStr.toLowerCase().includes(query.toLowerCase())) continue
+
+            const channelIdRaw = chObj.channel_id
+            const channelId = typeof channelIdRaw === 'string' ? channelIdRaw : formatJson(channelIdRaw ?? '—')
+            const channelIdShort =
+              typeof channelIdRaw === 'string' ? shorten(channelIdRaw, 10, 8) : '—'
+            const channelStateLabel = formatJson(chObj.state ?? '—')
+            const peerId = String(chObj.peer_id ?? '—')
+            const isPublic = chObj.is_public === true
+            const localBalance = formatAmountWithHex(chObj.local_balance)
+            const remoteBalance = formatAmountWithHex(chObj.remote_balance)
+            const enabled = typeof chObj.enabled === 'boolean' ? chObj.enabled : false
+            const createdAt = hexMillisToLocalTimeLabel(chObj.created_at)
+
+            matches.push({
+              nodeName: node.name,
+              nodeId: node.id,
+              rpcUrl: node.rpcUrl,
+              channelIdShort,
+              channelId,
+              channelStateLabel,
+              channelOutpoint: outpointStr,
+              peerId,
+              isPublic,
+              localBalance,
+              remoteBalance,
+              enabled,
+              createdAt,
+            })
+          }
+
+          setChannelOutpointSearchProgress((prev) => ({
+            completed: prev.completed + 1,
+            total: nodes.length,
+          }))
+
+          return matches
+        },
+      )
+
+      const flat = perNode.flat()
+      
+      // Sort by node name, then by channel ID
+      flat.sort((a, b) => {
+        if (a.nodeName !== b.nodeName) {
+          return a.nodeName.localeCompare(b.nodeName)
+        }
+        return a.channelId.localeCompare(b.channelId)
+      })
+
+      setChannelOutpointSearchResults(flat)
+      setChannelOutpointSearchState({ status: 'done' })
+    } catch (err) {
+      setChannelOutpointSearchState({
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }, [nodes, channelOutpointQuery])
+
   const runRpcCall = useCallback(async () => {
     if (!selectedNode) return
     const method = rpcMethod.trim()
@@ -828,6 +949,12 @@ function App() {
                 Payment Hash
               </button>
               <button
+                className={viewMode === 'channelOutpointSearch' ? 'btn' : 'btn btnGhost'}
+                onClick={() => setViewMode('channelOutpointSearch')}
+              >
+                Channel Outpoint
+              </button>
+              <button
                 className={viewMode === 'rpcDebug' ? 'btn' : 'btn btnGhost'}
                 onClick={() => setViewMode('rpcDebug')}
               >
@@ -899,6 +1026,7 @@ function App() {
                     <tr>
                       <th>Node</th>
                       <th>Status</th>
+                      <th>Node ID</th>
                       <th>RPC</th>
                       <th>Peers</th>
                       <th>Channels</th>
@@ -911,6 +1039,7 @@ function App() {
                   <tbody>
                     {overviewRows.map(({ node, summary, peersCount, channelsCount }) => {
                       const chainHash = getString(asObj(summary?.nodeInfo), 'chain_hash')
+                      const nodeId = getString(asObj(summary?.nodeInfo), 'node_id')
                       return (
                         <tr key={node.id}>
                           <td>
@@ -927,6 +1056,9 @@ function App() {
                             ) : (
                               <span className="pill">…</span>
                             )}
+                          </td>
+                          <td className="monoSmall">
+                            {nodeId ? shorten(nodeId, 16, 12) : '—'}
                           </td>
                           <td className="monoSmall">{shorten(node.rpcUrl, 18, 10)}</td>
                           <td>{peersCount ?? '—'}</td>
@@ -1541,6 +1673,140 @@ function App() {
                 ) : paymentSearchState.status === 'done' ? (
                   <div className="muted" style={{ marginTop: 12 }}>
                     未在任何节点的 pending_tlcs 中找到匹配的 Payment Hash。
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {viewMode === 'channelOutpointSearch' ? (
+          <div className="layout">
+            <section className="card">
+              <div className="cardHeader">
+                <div className="cardTitle">Channel Outpoint 视图</div>
+                <div className="muted">
+                  {channelOutpointSearchState.status === 'searching'
+                    ? `扫描中 ${channelOutpointSearchProgress.completed}/${channelOutpointSearchProgress.total}`
+                    : channelOutpointSearchState.status === 'done'
+                    ? `找到 ${channelOutpointSearchResults.length} 条匹配`
+                    : '输入 Channel Outpoint 并开始扫描所有节点的 channels'}
+                </div>
+              </div>
+              <div className="cardBody">
+                <div className="field" style={{ marginBottom: 12 }}>
+                  <div className="label">Channel Outpoint</div>
+                  <input
+                    className="input"
+                    value={channelOutpointQuery}
+                    onChange={(e) => setChannelOutpointQuery(e.target.value)}
+                    placeholder="例如：0x9bb2a8a4bebaf793..."
+                  />
+                  <div className="smallNote">
+                    将使用 list_channels 扫描所有节点的 channels，并按照 Channel Outpoint 匹配（支持部分匹配）。
+                  </div>
+                </div>
+                <div className="modalActions" style={{ padding: 0, marginBottom: 12 }}>
+                  <div className="spacer" />
+                  <button
+                    className="btn"
+                    onClick={() => void runChannelOutpointSearch()}
+                    disabled={
+                      channelOutpointSearchState.status === 'searching' ||
+                      !channelOutpointQuery.trim() ||
+                      !nodes.length
+                    }
+                  >
+                    扫描 channels
+                  </button>
+                </div>
+                {channelOutpointSearchState.status === 'searching' ||
+                channelOutpointSearchProgress.completed > 0 ? (
+                  <div style={{ marginBottom: 12 }}>
+                    <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                      扫描进度：{channelOutpointSearchProgress.completed}/{channelOutpointSearchProgress.total} (
+                      {channelOutpointSearchProgress.total > 0
+                        ? Math.round((channelOutpointSearchProgress.completed / channelOutpointSearchProgress.total) * 100)
+                        : 0}%)
+                    </div>
+                    <div
+                      style={{
+                        width: '100%',
+                        height: 8,
+                        borderRadius: 999,
+                        background: 'rgba(255,255,255,0.06)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${channelOutpointSearchProgress.total > 0
+                            ? Math.round((channelOutpointSearchProgress.completed / channelOutpointSearchProgress.total) * 100)
+                            : 0}%`,
+                          height: '100%',
+                          background:
+                            'linear-gradient(90deg, rgba(124,255,214,0.9), rgba(138,125,255,0.9))',
+                          transition: 'width 160ms ease',
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+                {channelOutpointSearchState.status === 'error' ? (
+                  <div className="dangerRow" style={{ marginBottom: 12 }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 12 }}>扫描失败</div>
+                      <div className="smallNote">{channelOutpointSearchState.error}</div>
+                    </div>
+                  </div>
+                ) : null}
+                {channelOutpointSearchResults.length ? (
+                  <div style={{ maxHeight: 480, overflow: 'auto' }}>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Node</th>
+                          <th>Channel ID</th>
+                          <th>Channel Outpoint</th>
+                          <th>State</th>
+                          <th>Peer ID</th>
+                          <th>Public</th>
+                          <th>Local Balance</th>
+                          <th>Remote Balance</th>
+                          <th>Enabled</th>
+                          <th>Created</th>
+                          <th>RPC</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {channelOutpointSearchResults.map((row, idx) => (
+                          <tr key={`${row.nodeId}-${row.channelId}-${idx}`}>
+                            <td>
+                              <div style={{ display: 'grid', gap: 4 }}>
+                                <span style={{ fontWeight: 600 }}>{row.nodeName}</span>
+                                <span className="monoSmall">{shorten(row.nodeId, 8, 6)}</span>
+                              </div>
+                            </td>
+                            <td className="monoSmall">{row.channelIdShort}</td>
+                            <td className="monoSmall" title={row.channelOutpoint}>
+                              {shorten(row.channelOutpoint, 20, 16)}
+                            </td>
+                            <td className="monoSmall">{row.channelStateLabel}</td>
+                            <td className="monoSmall">{shorten(row.peerId, 14, 10)}</td>
+                            <td>{row.isPublic ? 'yes' : 'no'}</td>
+                            <td className="monoSmall">{row.localBalance}</td>
+                            <td className="monoSmall">{row.remoteBalance}</td>
+                            <td>{row.enabled ? 'yes' : 'no'}</td>
+                            <td className="monoSmall">{row.createdAt}</td>
+                            <td className="monoSmall">{shorten(row.rpcUrl, 18, 10)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : channelOutpointSearchState.status === 'done' ? (
+                  <div className="muted" style={{ marginTop: 12 }}>
+                    未在任何节点的 channels 中找到匹配的 Channel Outpoint。
                   </div>
                 ) : null}
               </div>
