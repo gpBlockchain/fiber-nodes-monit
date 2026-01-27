@@ -25,8 +25,13 @@
   - 使用并发（默认 10）逐节点拉取 channels，展示扫描进度条
   - 表格中展示匹配 TLC 所在节点、channel、方向、金额、过期时间、TLC 状态、转发信息等
 - RPC 调试视图：
-  - 选择一个节点后，可手动输入任意 Fiber JSON-RPC 方法名与 JSON 形式的 params
-  - 通过统一代理直接发起调用，并以 JSON 格式渲染返回结果 / 错误信息
+  - 选择一个节点后，可手动输入任意 Fiber JSON-RPC 方法名与 JSON 形式的 params，通过统一代理直接发起调用
+  - **快捷调用**：提供常用方法的一键模板填充，包括：
+    - `send_payment`（按 invoice 支付）、`send_payment (keysend)`（按目标公钥 + 金额 keysend 支付）
+    - `new_invoice`、`parse_invoice`（解析编码后的 invoice 字符串）
+    - `get_payment`、`open_channel`、`shutdown_channel`
+  - 点击快捷按钮会填充对应 Method 与 Params 模板，用户可在 Params 中补全或修改字段后点击「调用」
+  - RPC 响应区域对长 JSON 做高度与横向溢出控制：在卡片内滚动、长行自动换行，避免撑破页面
 - 自动刷新与手动刷新：
   - 当前选中节点详情每 15 秒自动刷新
   - 顶部工具栏提供「刷新当前节点」按钮，随时强制拉取最新详情

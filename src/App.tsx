@@ -21,6 +21,21 @@ function getArray(obj: JsonObj, key: string): unknown[] | null {
   return Array.isArray(v) ? v : null
 }
 
+/**
+ * RPC 调试页快捷调用预设：点击按钮会自动填充 Method 与 Params 模板。
+ * 支持 send_payment（invoice / keysend）、new_invoice、parse_invoice、
+ * get_payment、open_channel、shutdown_channel 等常用方法，用户可在模板上修改后再调用。
+ */
+const RPC_QUICK_PRESETS: { method: string; label: string; params: string }[] = [
+  { method: 'send_payment', label: 'send_payment', params: JSON.stringify({ invoice: '' }, null, 2) },
+  { method: 'send_payment', label: 'send_payment (keysend)', params: JSON.stringify({ target_pubkey: '', amount: '0x5f5e100', keysend: true }, null, 2) },
+  { method: 'new_invoice', label: 'new_invoice', params: JSON.stringify({ amount: '0x5f5e100', currency: 'Fibt', description: '', expiry: '0xe10', final_expiry_delta: '0x5265c00', payment_preimage: '0x', hash_algorithm: 'sha256' }, null, 2) },
+  { method: 'parse_invoice', label: 'parse_invoice', params: JSON.stringify({ invoice: '' }, null, 2) },
+  { method: 'get_payment', label: 'get_payment', params: JSON.stringify({ payment_hash: '0x' }, null, 2) },
+  { method: 'open_channel', label: 'open_channel', params: JSON.stringify({ peer_id: '', funding_amount: '0x2540be400', public: true }, null, 2) },
+  { method: 'shutdown_channel', label: 'shutdown_channel', params: JSON.stringify({ channel_id: '0x', close_script: { code_hash: '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8', hash_type: 'type', args: '' }, fee_rate: '0x3FC' }, null, 2) },
+]
+
 function formatAmountWithHex(value: unknown): string {
   const hex = typeof value === 'string' ? value : null
   const dec = hexToNumberMaybe(value)
@@ -34,6 +49,16 @@ function formatAmountWithHex(value: unknown): string {
 function hexMillisToLocalTimeLabel(value: unknown): string {
   const ms = hexToNumberMaybe(value)
   if (ms == null) return '—'
+  const date = new Date(ms)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString()
+}
+
+/** Unix timestamp: value < 1e12 视为秒，否则视为毫秒 */
+function hexTimestampToLocalTimeLabel(value: unknown): string {
+  const n = hexToNumberMaybe(value)
+  if (n == null) return '—'
+  const ms = n < 1e12 ? n * 1000 : n
   const date = new Date(ms)
   if (Number.isNaN(date.getTime())) return '—'
   return date.toLocaleString()
@@ -343,6 +368,14 @@ function App() {
   const [rpcParams, setRpcParams] = useState('{}')
   const [rpcState, setRpcState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
   const [rpcResponse, setRpcResponse] = useState('')
+  const GRAPH_NODES_PAGE_SIZE = 20
+  const [graphNodesPages, setGraphNodesPages] = useState<Array<{ nodes: JsonObj[]; last_cursor?: unknown }>>([])
+  const [graphNodesCurrentPageIndex, setGraphNodesCurrentPageIndex] = useState(0)
+  const [graphNodesLoading, setGraphNodesLoading] = useState(false)
+  const GRAPH_CHANNELS_PAGE_SIZE = 20
+  const [graphChannelsPages, setGraphChannelsPages] = useState<Array<{ channels: JsonObj[]; last_cursor?: unknown }>>([])
+  const [graphChannelsCurrentPageIndex, setGraphChannelsCurrentPageIndex] = useState(0)
+  const [graphChannelsLoading, setGraphChannelsLoading] = useState(false)
 
   const toggleChannel = (id: string) => {
     setExpandedChannels((prev) => {
@@ -431,6 +464,96 @@ function App() {
     }, 0)
     return () => window.clearTimeout(t)
   }, [refreshDetails])
+
+  useEffect(() => {
+    if (details?.graphNodes) {
+      setGraphNodesPages([{
+        nodes: details.graphNodes.nodes,
+        last_cursor: details.graphNodes.last_cursor,
+      }])
+      setGraphNodesCurrentPageIndex(0)
+    } else {
+      setGraphNodesPages([])
+      setGraphNodesCurrentPageIndex(0)
+    }
+  }, [selectedNodeId, details?.fetchedAt])
+
+  const loadGraphNodesNextPage = useCallback(async () => {
+    if (!selectedNode) return
+    const pages = graphNodesPages
+    const current = pages[graphNodesCurrentPageIndex]
+    if (!current?.last_cursor) return
+    setGraphNodesLoading(true)
+    try {
+      const res = await callFiberRpc<{ nodes: unknown[]; last_cursor?: unknown }>(
+        selectedNode,
+        'graph_nodes',
+        {
+          limit: `0x${GRAPH_NODES_PAGE_SIZE.toString(16)}`,
+          after: current.last_cursor,
+        },
+      )
+      const nextPage = {
+        nodes: (res?.nodes ?? []).map(asObj),
+        last_cursor: res?.last_cursor,
+      }
+      setGraphNodesPages((prev) => [...prev, nextPage])
+      setGraphNodesCurrentPageIndex((prev) => prev + 1)
+    } catch {
+      // keep state unchanged on error
+    } finally {
+      setGraphNodesLoading(false)
+    }
+  }, [selectedNode, graphNodesPages, graphNodesCurrentPageIndex])
+
+  const loadGraphNodesPrevPage = useCallback(() => {
+    setGraphNodesCurrentPageIndex((prev) => Math.max(0, prev - 1))
+  }, [])
+
+  useEffect(() => {
+    if (details?.graphChannels) {
+      setGraphChannelsPages([{
+        channels: details.graphChannels.channels,
+        last_cursor: details.graphChannels.last_cursor,
+      }])
+      setGraphChannelsCurrentPageIndex(0)
+    } else {
+      setGraphChannelsPages([])
+      setGraphChannelsCurrentPageIndex(0)
+    }
+  }, [selectedNodeId, details?.fetchedAt])
+
+  const loadGraphChannelsNextPage = useCallback(async () => {
+    if (!selectedNode) return
+    const pages = graphChannelsPages
+    const current = pages[graphChannelsCurrentPageIndex]
+    if (!current?.last_cursor) return
+    setGraphChannelsLoading(true)
+    try {
+      const res = await callFiberRpc<{ channels: unknown[]; last_cursor?: unknown }>(
+        selectedNode,
+        'graph_channels',
+        {
+          limit: `0x${GRAPH_CHANNELS_PAGE_SIZE.toString(16)}`,
+          after: current.last_cursor,
+        },
+      )
+      const nextPage = {
+        channels: (res?.channels ?? []).map(asObj),
+        last_cursor: res?.last_cursor,
+      }
+      setGraphChannelsPages((prev) => [...prev, nextPage])
+      setGraphChannelsCurrentPageIndex((prev) => prev + 1)
+    } catch {
+      // keep state unchanged on error
+    } finally {
+      setGraphChannelsLoading(false)
+    }
+  }, [selectedNode, graphChannelsPages, graphChannelsCurrentPageIndex])
+
+  const loadGraphChannelsPrevPage = useCallback(() => {
+    setGraphChannelsCurrentPageIndex((prev) => Math.max(0, prev - 1))
+  }, [])
 
   useInterval(
     () => {
@@ -1223,28 +1346,100 @@ function App() {
             </div>
 
             <div className="card">
-              <div className="cardHeader">
-                <div className="cardTitle">Graph Nodes (graph_nodes)</div>
-                <div className="muted">
-                  {details ? `${details.graphNodes?.nodes?.length ?? 0} nodes` : '—'}
+              <div className="cardHeader" style={{ flexWrap: 'wrap', gap: 12 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <div className="cardTitle">Graph Nodes (graph_nodes)</div>
+                  <div className="muted">
+                    {details
+                      ? `本页 ${(graphNodesPages[graphNodesCurrentPageIndex]?.nodes?.length ?? 0)} 条 · 已加载 ${graphNodesPages.length} 页`
+                      : '—'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    第 {graphNodesCurrentPageIndex + 1} 页
+                    {graphNodesPages.length > 1 ? ` / 共 ${graphNodesPages.length} 页` : ''}
+                  </span>
+                  <button
+                    className="btn btnGhost"
+                    onClick={loadGraphNodesPrevPage}
+                    disabled={graphNodesCurrentPageIndex === 0}
+                    style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    className="btn btnGhost"
+                    onClick={() => void loadGraphNodesNextPage()}
+                    disabled={
+                      graphNodesLoading ||
+                      !selectedNode ||
+                      !graphNodesPages[graphNodesCurrentPageIndex]?.last_cursor
+                    }
+                    style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
+                  >
+                    {graphNodesLoading ? '加载中…' : '下一页'}
+                  </button>
                 </div>
               </div>
-              <div className="cardBody">
-                {details ? (
-                  <div className="kvGrid">
-                    <div className="k">limit</div>
-                    <div className="v">200</div>
-                    <div className="k">last_cursor</div>
-                    <div className="v">{details.graphNodes?.last_cursor ? shorten(String(details.graphNodes.last_cursor), 18, 10) : '—'}</div>
-                    <div className="k">sample</div>
-                    <div className="v">
-                      {details.graphNodes?.nodes?.[0]
-                        ? shorten(formatJson(details.graphNodes.nodes[0]), 48, 0)
-                        : '—'}
-                    </div>
-                  </div>
+              <div className="cardBody" style={{ padding: 0, maxHeight: 420, overflow: 'auto' }}>
+                {details && graphNodesPages.length > 0 ? (
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>node_id</th>
+                        <th>node_name</th>
+                        <th>version</th>
+                        <th>addresses</th>
+                        <th>chain_hash</th>
+                        <th>timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(graphNodesPages[graphNodesCurrentPageIndex]?.nodes ?? []).length > 0 ? (
+                        (graphNodesPages[graphNodesCurrentPageIndex]?.nodes ?? []).map((n, idx) => {
+                          const nodeId = getString(n, 'node_id')
+                          const nodeName = getString(n, 'node_name')
+                          const version = getString(n, 'version')
+                          const addrs = getArray(n, 'addresses')
+                          const chainHash = getString(n, 'chain_hash')
+                          const timestampLabel = hexTimestampToLocalTimeLabel(n.timestamp)
+                          return (
+                            <tr key={nodeId ?? `gn-${graphNodesCurrentPageIndex}-${idx}`}>
+                              <td className="monoSmall" title={nodeId ?? ''}>
+                                {nodeId ? shorten(nodeId, 14, 10) : '—'}
+                              </td>
+                              <td className="monoSmall">{nodeName ?? '—'}</td>
+                              <td className="monoSmall">{version ?? '—'}</td>
+                              <td className="monoSmall">
+                                {addrs?.length
+                                  ? addrs.map((a, i) => (
+                                      <div key={i}>
+                                        {typeof a === 'string' ? a : (asObj(a).address as string) ?? formatJson(a)}
+                                      </div>
+                                    ))
+                                  : '—'}
+                              </td>
+                              <td className="monoSmall">
+                                {chainHash ? shorten(chainHash, 12, 8) : '—'}
+                              </td>
+                              <td className="monoSmall">{timestampLabel}</td>
+                            </tr>
+                          )
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={6} className="muted" style={{ padding: 14 }}>
+                            本页无数据
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 ) : (
-                  <div className="muted">—</div>
+                  <div className="muted" style={{ padding: 14 }}>
+                    {details ? '暂无 graph 数据' : '选择节点后可查看 graph_nodes'}
+                  </div>
                 )}
               </div>
             </div>
@@ -1512,28 +1707,98 @@ function App() {
           </section>
 
           <section className="card">
-            <div className="cardHeader">
-              <div className="cardTitle">Graph Channels (graph_channels)</div>
-              <div className="muted">
-                {details ? `${details.graphChannels?.channels?.length ?? 0} channels` : '—'}
+            <div className="cardHeader" style={{ flexWrap: 'wrap', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="cardTitle">Graph Channels (graph_channels)</div>
+                <div className="muted">
+                  {details
+                    ? `本页 ${(graphChannelsPages[graphChannelsCurrentPageIndex]?.channels?.length ?? 0)} 条 · 已加载 ${graphChannelsPages.length} 页`
+                    : '—'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  第 {graphChannelsCurrentPageIndex + 1} 页
+                  {graphChannelsPages.length > 1 ? ` / 共 ${graphChannelsPages.length} 页` : ''}
+                </span>
+                <button
+                  className="btn btnGhost"
+                  onClick={loadGraphChannelsPrevPage}
+                  disabled={graphChannelsCurrentPageIndex === 0}
+                  style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
+                >
+                  上一页
+                </button>
+                <button
+                  className="btn btnGhost"
+                  onClick={() => void loadGraphChannelsNextPage()}
+                  disabled={
+                    graphChannelsLoading ||
+                    !selectedNode ||
+                    !graphChannelsPages[graphChannelsCurrentPageIndex]?.last_cursor
+                  }
+                  style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
+                >
+                  {graphChannelsLoading ? '加载中…' : '下一页'}
+                </button>
               </div>
             </div>
-            <div className="cardBody">
-              {details ? (
-                <div className="kvGrid">
-                  <div className="k">limit</div>
-                  <div className="v">200</div>
-                  <div className="k">last_cursor</div>
-                  <div className="v">{details.graphChannels?.last_cursor ? shorten(String(details.graphChannels.last_cursor), 18, 10) : '—'}</div>
-                  <div className="k">sample</div>
-                  <div className="v">
-                    {details.graphChannels?.channels?.[0]
-                      ? shorten(formatJson(details.graphChannels.channels[0]), 48, 0)
-                      : '—'}
-                  </div>
-                </div>
+            <div className="cardBody" style={{ padding: 0, maxHeight: 420, overflow: 'auto' }}>
+              {details && graphChannelsPages.length > 0 ? (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>channel_outpoint</th>
+                      <th>node1</th>
+                      <th>node2</th>
+                      <th>capacity</th>
+                      <th>chain_hash</th>
+                      <th>created_timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(graphChannelsPages[graphChannelsCurrentPageIndex]?.channels ?? []).length > 0 ? (
+                      (graphChannelsPages[graphChannelsCurrentPageIndex]?.channels ?? []).map((c, idx) => {
+                        const outpoint = c.channel_outpoint
+                        const outpointStr = typeof outpoint === 'string' ? outpoint : formatJson(outpoint ?? '—')
+                        const node1 = getString(c, 'node1')
+                        const node2 = getString(c, 'node2')
+                        const capacity = formatAmountWithHex(c.capacity)
+                        const chainHash = getString(c, 'chain_hash')
+                        const createdLabel = hexTimestampToLocalTimeLabel(c.created_timestamp)
+                        const rowKey = outpointStr ?? `gc-${graphChannelsCurrentPageIndex}-${idx}`
+                        return (
+                          <tr key={rowKey}>
+                            <td className="monoSmall" title={outpointStr}>
+                              {typeof outpointStr === 'string' ? shorten(outpointStr, 18, 10) : outpointStr}
+                            </td>
+                            <td className="monoSmall" title={node1 ?? ''}>
+                              {node1 ? shorten(node1, 12, 8) : '—'}
+                            </td>
+                            <td className="monoSmall" title={node2 ?? ''}>
+                              {node2 ? shorten(node2, 12, 8) : '—'}
+                            </td>
+                            <td className="monoSmall">{capacity}</td>
+                            <td className="monoSmall">
+                              {chainHash ? shorten(chainHash, 12, 8) : '—'}
+                            </td>
+                            <td className="monoSmall">{createdLabel}</td>
+                          </tr>
+                        )
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="muted" style={{ padding: 14 }}>
+                          本页无数据
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               ) : (
-                <div className="muted">—</div>
+                <div className="muted" style={{ padding: 14 }}>
+                  {details ? '暂无 graph channels 数据' : '选择节点后可查看 graph_channels'}
+                </div>
               )}
             </div>
           </section>
@@ -1828,7 +2093,27 @@ function App() {
                   <div className="muted">需要先在左侧选择一个节点。</div>
                 ) : (
                   <>
+                    {/* 快捷调用：一键填充 Method + Params 模板，便于 send_payment/new_invoice/parse_invoice 等常用 RPC */}
                     <div className="field">
+                      <div className="label">快捷调用</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                        {RPC_QUICK_PRESETS.map((p) => (
+                          <button
+                            key={p.label}
+                            type="button"
+                            className="btn btnGhost"
+                            style={{ fontSize: 12, padding: '6px 10px' }}
+                            onClick={() => {
+                              setRpcMethod(p.method)
+                              setRpcParams(p.params)
+                            }}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="field" style={{ marginTop: 10 }}>
                       <div className="label">Method</div>
                       <input
                         className="input"
@@ -1870,20 +2155,34 @@ function App() {
                 )}
               </div>
             </section>
+            {/* RPC 响应区域：maxHeight + overflow 限制在卡片内滚动，pre 使用 wordBreak/overflowWrap 防止长行横向溢出 */}
             <section className="card">
               <div className="cardHeader">
                 <div className="cardTitle">RPC 响应</div>
               </div>
-              <div className="cardBody">
+              <div
+                className="cardBody"
+                style={{
+                  padding: rpcState !== 'idle' ? 0 : undefined,
+                  maxHeight: rpcState !== 'idle' ? 480 : undefined,
+                  overflow: rpcState !== 'idle' ? 'auto' : undefined,
+                  minHeight: 0,
+                }}
+              >
                 {rpcState === 'idle' ? (
                   <div className="muted">尚未调用。</div>
                 ) : (
                   <pre
                     style={{
                       whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'break-word',
                       fontFamily: 'var(--font-mono, monospace)',
                       fontSize: 12,
                       margin: 0,
+                      padding: '12px 14px 14px',
+                      maxWidth: '100%',
+                      boxSizing: 'border-box',
                     }}
                   >
                     {rpcResponse}
