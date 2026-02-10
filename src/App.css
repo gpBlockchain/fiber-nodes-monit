@@ -441,4 +441,83 @@
   .nodeList {
     max-height: none;
   }
+  .ctCellsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ctTraceItem {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  background: rgba(10, 12, 20, 0.45);
+  transition: border-color 120ms ease;
+}
+
+.ctTraceItem:hover {
+  border-color: rgba(138, 125, 255, 0.30);
+}
+
+.ctTraceHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ctTraceIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(124, 255, 214, 0.15), rgba(138, 125, 255, 0.15));
+  border: 1px solid rgba(124, 255, 214, 0.25);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.ctHashCopy {
+  cursor: pointer;
+  border-bottom: 1px dotted rgba(200, 220, 255, 0.25);
+  transition: color 120ms ease;
+}
+
+.ctHashCopy:hover {
+  color: var(--accent);
+}
+
+.ctBalanceBox {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(6, 8, 14, 0.35);
+}
+
+.ctBalanceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.ctCellsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.ctCellCard {
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(6, 8, 14, 0.3);
 }
