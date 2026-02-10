@@ -1,5 +1,8 @@
 type CkbNetwork = 'testnet' | 'mainnet'
 
+export const SHANNON_PER_CKB = 100_000_000
+const MIN_LOCK_ARGS_HEX_LEN = 72
+
 const NETWORK_CONFIG: Record<CkbNetwork, { rpcUrl: string; commitmentCodeHash: string }> = {
   testnet: {
     rpcUrl: 'https://testnet.ckb.dev/',
@@ -331,7 +334,7 @@ async function getTxMessage(rpcUrl: string, commitmentCodeHash: string, txHash: 
         const witnessHex = tx.witnesses[index]
         const args = prevOutput.lock.args
         const argsData = args.startsWith('0x') ? args.slice(2) : args
-        if (argsData.length >= 72) {
+        if (argsData.length >= MIN_LOCK_ARGS_HEX_LEN) {
           const versionHex = argsData.substring(56, 72)
           const v1 = littleEndianHexToBigInt(versionHex)
           if (v1 === 1n) {
@@ -460,7 +463,7 @@ export async function fetchAndParseTx(
   const lockArgs = prevTx.transaction.outputs[0].lock.args
   const argsData = lockArgs.startsWith('0x') ? lockArgs.slice(2) : lockArgs
   let version = '2'
-  if (argsData.length >= 72) {
+  if (argsData.length >= MIN_LOCK_ARGS_HEX_LEN) {
     const versionHex = argsData.substring(56, 72)
     const v1 = littleEndianHexToBigInt(versionHex)
     if (v1 === 1n) version = '1'

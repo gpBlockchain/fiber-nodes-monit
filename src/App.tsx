@@ -11,6 +11,7 @@ import {
   parseLockArgsV2,
   parseWitness,
   parseWitnessV2,
+  SHANNON_PER_CKB,
   type TraceItem,
   type ParsedLockArgs,
   type ParsedWitness,
@@ -2515,7 +2516,7 @@ function truncateHash(hash: string, left = 10, right = 10): string {
 
 function formatCkb(shannon: string): string {
   const n = Number(BigInt(shannon))
-  return (n / 100000000).toFixed(8).replace(/\.?0+$/, '')
+  return (n / SHANNON_PER_CKB).toFixed(8).replace(/\.?0+$/, '')
 }
 
 function CommitmentTraceView({
@@ -2807,7 +2808,7 @@ function TraceItemCard({
           {msg.input_cells.map((c, i) => (
             <div key={i} className="ctCellCard">
               <div style={{ fontSize: 12 }}>
-                {(Number(c.capacity) / 100000000).toFixed(2)} CKB
+                {(Number(c.capacity) / SHANNON_PER_CKB).toFixed(2)} CKB
               </div>
               {c.udt_capacity ? (
                 <div style={{ fontSize: 11, color: 'var(--accent)' }}>UDT: {c.udt_capacity.toString()}</div>
@@ -2825,7 +2826,7 @@ function TraceItemCard({
           {msg.output_cells.map((c, i) => (
             <div key={i} className="ctCellCard">
               <div style={{ fontSize: 12 }}>
-                {(Number(c.capacity) / 100000000).toFixed(2)} CKB
+                {(Number(c.capacity) / SHANNON_PER_CKB).toFixed(2)} CKB
               </div>
               {c.udt_capacity ? (
                 <div style={{ fontSize: 11, color: 'var(--accent)' }}>UDT: {c.udt_capacity.toString()}</div>
