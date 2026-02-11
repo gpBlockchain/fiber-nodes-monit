@@ -3,6 +3,7 @@ import './App.css'
 import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from './lib/format'
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
+import { NetworkGraph, type GraphNodeData } from './NetworkGraph'
 
 type JsonObj = Record<string, unknown>
 
@@ -339,7 +340,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'nodeControl'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'nodeControl' | 'networkGraph'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -405,6 +406,22 @@ function App() {
   const [ctrlShutdownCloseArgs, setCtrlShutdownCloseArgs] = useState('')
   const [ctrlShutdownState, setCtrlShutdownState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
   const [ctrlShutdownResult, setCtrlShutdownResult] = useState('')
+
+  const [graphNodeDetails, setGraphNodeDetails] = useState<Record<string, { peers: string[]; channels: { channelId: string; peerId: string; state: string; localBalance: string; remoteBalance: string }[] }>>({})
+  const [graphRefreshState, setGraphRefreshState] = useState<'idle' | 'refreshing'>('idle')
+  const [graphActionModal, setGraphActionModal] = useState<{
+    kind: 'connect' | 'openChannel' | 'sendPayment' | 'shutdownChannel'
+    fromNode: MonitoredNode
+    toNode?: MonitoredNode
+    toNodeId?: string
+    channelId?: string
+  } | null>(null)
+  const [graphActionState, setGraphActionState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
+  const [graphActionResult, setGraphActionResult] = useState('')
+  const [graphActionAmount, setGraphActionAmount] = useState('')
+  const [graphActionInvoice, setGraphActionInvoice] = useState('')
+  const [graphActionPublic, setGraphActionPublic] = useState(true)
+  const [graphActionForce, setGraphActionForce] = useState(false)
 
   const toggleChannel = (id: string) => {
     setExpandedChannels((prev) => {
@@ -1100,6 +1117,128 @@ function App() {
     }
   }, [selectedNode, ctrlShutdownChannelId, ctrlShutdownForce, ctrlShutdownFeeRate, ctrlShutdownCloseArgs, refreshDetails])
 
+  const refreshGraphData = useCallback(async () => {
+    if (!nodes.length) return
+    setGraphRefreshState('refreshing')
+    try {
+      await runWithConcurrency(nodes, 10, async (n: MonitoredNode) => {
+        try {
+          const [peersRes, channelsRes, nodeInfoRes] = await Promise.all([
+            callFiberRpc<{ peers: unknown[] }>(n, 'list_peers'),
+            callFiberRpc<{ channels: unknown[] }>(n, 'list_channels', { include_closed: true }),
+            callFiberRpc<JsonObj>(n, 'node_info'),
+          ])
+          const peers = (peersRes?.peers ?? []).map((p) => {
+            const obj = asObj(p)
+            return getString(obj, 'peer_id') ?? ''
+          }).filter(Boolean)
+          const channels = (channelsRes?.channels ?? []).map((c) => {
+            const obj = asObj(c)
+            return {
+              channelId: getString(obj, 'channel_id') ?? '',
+              peerId: getString(obj, 'peer_id') ?? '',
+              state: formatJson(obj.state ?? ''),
+              localBalance: formatAmountWithHex(obj.local_balance),
+              remoteBalance: formatAmountWithHex(obj.remote_balance),
+            }
+          })
+          const nodeId = getString(asObj(nodeInfoRes), 'node_id')
+          setSummaries((prev) => ({
+            ...prev,
+            [n.id]: {
+              nodeId: n.id,
+              ok: true,
+              updatedAt: Date.now(),
+              latencyMs: 0,
+              nodeInfo: nodeInfoRes,
+              peersCount: peers.length,
+              channelsCount: channels.length,
+            },
+          }))
+          setGraphNodeDetails((prev) => ({ ...prev, [n.id]: { peers, channels, nodeId } }))
+        } catch {
+          setSummaries((prev) => ({
+            ...prev,
+            [n.id]: { nodeId: n.id, ok: false, updatedAt: Date.now(), latencyMs: 0, error: 'fetch failed' },
+          }))
+          setGraphNodeDetails((prev) => ({ ...prev, [n.id]: { peers: [], channels: [] } }))
+        }
+      })
+    } finally {
+      setGraphRefreshState('idle')
+    }
+  }, [nodes])
+
+  const graphNodesData: GraphNodeData[] = useMemo(() => {
+    return nodes.map((n) => {
+      const s = summaries[n.id]
+      const d = graphNodeDetails[n.id]
+      const nodeId = getString(asObj(s?.nodeInfo), 'node_id')
+      return {
+        node: n,
+        nodeId: nodeId ?? null,
+        ok: s?.ok ?? false,
+        peers: d?.peers ?? [],
+        channels: d?.channels ?? [],
+      }
+    })
+  }, [nodes, summaries, graphNodeDetails])
+
+  const runGraphAction = useCallback(async () => {
+    if (!graphActionModal) return
+    setGraphActionState('pending')
+    setGraphActionResult('')
+    const { kind, fromNode, toNode, toNodeId, channelId } = graphActionModal
+    try {
+      if (kind === 'connect' && toNode) {
+        const nodeInfo = await callFiberRpc<JsonObj>(toNode, 'node_info')
+        const addrs = asObj(nodeInfo).addresses
+        if (!Array.isArray(addrs) || !addrs.length) throw new Error('对端节点无可用地址')
+        const addr = typeof addrs[0] === 'string' ? addrs[0] : getString(asObj(addrs[0]), 'address')
+        if (!addr) throw new Error('无法解析对端地址')
+        const targetNodeId = getString(asObj(nodeInfo), 'node_id')
+        const fullAddr = targetNodeId ? `${addr}/p2p/${targetNodeId}` : addr
+        await callFiberRpc<unknown>(fromNode, 'connect_peer', { address: fullAddr, save: true })
+        setGraphActionState('success')
+        setGraphActionResult('连接成功')
+        void refreshGraphData()
+      } else if (kind === 'openChannel' && toNodeId) {
+        const amountRaw = graphActionAmount.trim()
+        if (!amountRaw) { setGraphActionState('idle'); return }
+        const amount = amountRaw.startsWith('0x') ? amountRaw : `0x${BigInt(amountRaw).toString(16)}`
+        const result = await callFiberRpc<JsonObj>(fromNode, 'open_channel', {
+          peer_id: toNodeId,
+          funding_amount: amount,
+          public: graphActionPublic,
+        })
+        setGraphActionState('success')
+        const tempId = getString(asObj(result), 'temporary_channel_id') ?? formatJson(result)
+        setGraphActionResult(`通道已创建: ${tempId}`)
+        void refreshGraphData()
+      } else if (kind === 'sendPayment') {
+        const inv = graphActionInvoice.trim()
+        if (!inv) { setGraphActionState('idle'); return }
+        const result = await callFiberRpc<JsonObj>(fromNode, 'send_payment', { invoice: inv })
+        setGraphActionState('success')
+        const hash = getString(asObj(result), 'payment_hash') ?? ''
+        const status = getString(asObj(result), 'status') ?? ''
+        setGraphActionResult(`payment_hash: ${hash}\nstatus: ${status}`)
+      } else if (kind === 'shutdownChannel' && channelId) {
+        const params: Record<string, unknown> = { channel_id: channelId, force: graphActionForce }
+        if (!graphActionForce) {
+          params.fee_rate = DEFAULT_SHUTDOWN_FEE_RATE
+        }
+        await callFiberRpc<unknown>(fromNode, 'shutdown_channel', params)
+        setGraphActionState('success')
+        setGraphActionResult('通道关闭请求已发送')
+        void refreshGraphData()
+      }
+    } catch (err) {
+      setGraphActionState('error')
+      setGraphActionResult(err instanceof Error ? err.message : String(err))
+    }
+  }, [graphActionModal, graphActionAmount, graphActionPublic, graphActionInvoice, graphActionForce, refreshGraphData])
+
   return (
     <div className="appShell">
       <aside className="side">
@@ -1219,6 +1358,15 @@ function App() {
               >
                 Node Control
               </button>
+              <button
+                className={viewMode === 'networkGraph' ? 'btn' : 'btn btnGhost'}
+                onClick={() => {
+                  setViewMode('networkGraph')
+                  void refreshGraphData()
+                }}
+              >
+                🌐 Network
+              </button>
             </div>
             {viewMode === 'dashboard' ? (
               <button
@@ -1227,6 +1375,15 @@ function App() {
                 disabled={!selectedNode}
               >
                 刷新当前节点
+              </button>
+            ) : null}
+            {viewMode === 'networkGraph' ? (
+              <button
+                className="btn"
+                onClick={() => void refreshGraphData()}
+                disabled={graphRefreshState === 'refreshing'}
+              >
+                {graphRefreshState === 'refreshing' ? '刷新中…' : '刷新图谱'}
               </button>
             ) : null}
           </div>
@@ -2600,6 +2757,151 @@ function App() {
                 )}
               </div>
             </section>
+          </div>
+        ) : null}
+
+        {viewMode === 'networkGraph' ? (
+          <div className="layout">
+            <NetworkGraph
+              graphNodes={graphNodesData}
+              summaries={summaries}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
+              onConnectPeer={(fromNode, toNode) => {
+                setGraphActionModal({ kind: 'connect', fromNode, toNode })
+                setGraphActionState('idle')
+                setGraphActionResult('')
+              }}
+              onOpenChannel={(fromNode, toNode, toNodeId) => {
+                setGraphActionModal({ kind: 'openChannel', fromNode, toNode, toNodeId })
+                setGraphActionState('idle')
+                setGraphActionResult('')
+                setGraphActionAmount('')
+              }}
+              onSendPayment={(fromNode, toNode, toNodeId) => {
+                setGraphActionModal({ kind: 'sendPayment', fromNode, toNode, toNodeId })
+                setGraphActionState('idle')
+                setGraphActionResult('')
+                setGraphActionInvoice('')
+              }}
+              onShutdownChannel={(fromNode, channelId) => {
+                setGraphActionModal({ kind: 'shutdownChannel', fromNode, channelId })
+                setGraphActionState('idle')
+                setGraphActionResult('')
+                setGraphActionForce(false)
+              }}
+            />
+          </div>
+        ) : null}
+
+        {graphActionModal ? (
+          <div className="modalOverlay" onMouseDown={() => setGraphActionModal(null)} role="presentation">
+            <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="modalHeader">
+                <div className="modalTitle">
+                  {graphActionModal.kind === 'connect' ? 'CONNECT PEER' :
+                   graphActionModal.kind === 'openChannel' ? 'OPEN CHANNEL' :
+                   graphActionModal.kind === 'sendPayment' ? 'SEND PAYMENT' :
+                   'SHUTDOWN CHANNEL'}
+                </div>
+                <button className="btn btnGhost" onClick={() => setGraphActionModal(null)} style={{ padding: '8px 10px', borderRadius: 14 }}>
+                  关闭
+                </button>
+              </div>
+              <div className="modalBody">
+                {graphActionModal.kind === 'connect' ? (
+                  <>
+                    <div className="kvGrid">
+                      <div className="k">From</div>
+                      <div className="v">{graphActionModal.fromNode.name}</div>
+                      <div className="k">To</div>
+                      <div className="v">{graphActionModal.toNode?.name ?? '—'}</div>
+                    </div>
+                    <div className="smallNote" style={{ marginTop: 8 }}>
+                      将从对端节点获取地址信息并自动发起 connect_peer 请求。
+                    </div>
+                  </>
+                ) : null}
+                {graphActionModal.kind === 'openChannel' ? (
+                  <>
+                    <div className="kvGrid">
+                      <div className="k">From</div>
+                      <div className="v">{graphActionModal.fromNode.name}</div>
+                      <div className="k">To (peer_id)</div>
+                      <div className="v monoSmall">{graphActionModal.toNodeId ? shorten(graphActionModal.toNodeId, 16, 10) : '—'}</div>
+                    </div>
+                    <div className="field" style={{ marginTop: 12 }}>
+                      <div className="label">Funding Amount (shannons)</div>
+                      <input
+                        className="input"
+                        value={graphActionAmount}
+                        onChange={(e) => setGraphActionAmount(e.target.value)}
+                        placeholder="例如: 10000000000 或 0x2540be400"
+                      />
+                    </div>
+                    <div className="field" style={{ marginTop: 8 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={graphActionPublic} onChange={(e) => setGraphActionPublic(e.target.checked)} />
+                        <span className="label" style={{ margin: 0 }}>Public Channel</span>
+                      </label>
+                    </div>
+                  </>
+                ) : null}
+                {graphActionModal.kind === 'sendPayment' ? (
+                  <>
+                    <div className="kvGrid">
+                      <div className="k">From</div>
+                      <div className="v">{graphActionModal.fromNode.name}</div>
+                      <div className="k">To</div>
+                      <div className="v">{graphActionModal.toNode?.name ?? '—'}</div>
+                    </div>
+                    <div className="field" style={{ marginTop: 12 }}>
+                      <div className="label">Invoice</div>
+                      <input
+                        className="input"
+                        value={graphActionInvoice}
+                        onChange={(e) => setGraphActionInvoice(e.target.value)}
+                        placeholder="粘贴 Fiber Invoice"
+                      />
+                    </div>
+                  </>
+                ) : null}
+                {graphActionModal.kind === 'shutdownChannel' ? (
+                  <>
+                    <div className="kvGrid">
+                      <div className="k">Node</div>
+                      <div className="v">{graphActionModal.fromNode.name}</div>
+                      <div className="k">Channel ID</div>
+                      <div className="v monoSmall">{graphActionModal.channelId ? shorten(graphActionModal.channelId, 16, 10) : '—'}</div>
+                    </div>
+                    <div className="field" style={{ marginTop: 8 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={graphActionForce} onChange={(e) => setGraphActionForce(e.target.checked)} />
+                        <span className="label" style={{ margin: 0 }}>Force Close</span>
+                      </label>
+                    </div>
+                  </>
+                ) : null}
+                {graphActionState === 'success' ? <div className="pill pillOk" style={{ marginTop: 8, wordBreak: 'break-all' }}>{graphActionResult}</div> : null}
+                {graphActionState === 'error' ? <div className="pill pillBad" style={{ marginTop: 8, wordBreak: 'break-all' }}>{graphActionResult}</div> : null}
+              </div>
+              <div className="modalActions">
+                <button className="btn btnGhost" onClick={() => setGraphActionModal(null)}>取消</button>
+                <div className="spacer" />
+                <button
+                  className="btn"
+                  onClick={() => void runGraphAction()}
+                  disabled={graphActionState === 'pending'}
+                  style={graphActionModal.kind === 'shutdownChannel' && graphActionForce ? { borderColor: 'rgba(255,77,109,0.5)', color: 'rgba(255,179,196,0.95)' } : undefined}
+                >
+                  {graphActionState === 'pending' ? '执行中…' :
+                   graphActionModal.kind === 'connect' ? '🔗 Connect' :
+                   graphActionModal.kind === 'openChannel' ? '📡 Open Channel' :
+                   graphActionModal.kind === 'sendPayment' ? '💸 Send' :
+                   graphActionForce ? '⛔ Force Shutdown' : '⛔ Shutdown'}
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
 
