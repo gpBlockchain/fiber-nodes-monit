@@ -419,6 +419,30 @@ function App() {
     saveNodes(nodes)
   }, [nodes])
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const urls = params.getAll('rpcurl').map((u) => u.trim()).filter(isHttpUrl)
+    if (!urls.length) return
+    const name = params.get('name')?.trim() || ''
+    const token = params.get('token')?.trim() || ''
+    setNodes((prev) => {
+      const existingUrls = new Set(prev.map((n) => n.rpcUrl))
+      const toAdd = urls.filter((u) => !existingUrls.has(u))
+      if (!toAdd.length) return prev
+      const now = Date.now()
+      const newNodes: MonitoredNode[] = toAdd.map((u) => ({
+        id: globalThis.crypto?.randomUUID?.() ?? `${now}-${Math.random()}`,
+        name: toAdd.length === 1 && name ? name : safeUrlLabel(u),
+        rpcUrl: u,
+        token: token || undefined,
+        createdAt: now,
+      }))
+      setSelectedNodeId(newNodes[0]?.id ?? null)
+      return [...newNodes, ...prev]
+    })
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [])
+
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
@@ -1061,16 +1085,32 @@ function App() {
                 </div>
                 <div style={{ display: 'grid', gap: 8, justifyItems: 'end' }}>
                   <span className="badge">{safeUrlLabel(n.rpcUrl)}</span>
-                  <button
-                    className="btn btnGhost"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      removeNode(n.id)
-                    }}
-                    style={{ padding: '6px 10px', borderRadius: 12 }}
-                  >
-                    删除
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="btn btnGhost"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const u = new URL(window.location.origin + window.location.pathname)
+                        u.searchParams.set('rpcurl', n.rpcUrl)
+                        u.searchParams.set('name', n.name)
+                        if (n.token) u.searchParams.set('token', n.token)
+                        copyToClipboard(u.toString())
+                      }}
+                      style={{ padding: '6px 10px', borderRadius: 12 }}
+                    >
+                      复制
+                    </button>
+                    <button
+                      className="btn btnGhost"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeNode(n.id)
+                      }}
+                      style={{ padding: '6px 10px', borderRadius: 12 }}
+                    >
+                      删除
+                    </button>
+                  </div>
                 </div>
               </div>
             )
