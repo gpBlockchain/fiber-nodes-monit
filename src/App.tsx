@@ -3,6 +3,7 @@ import './App.css'
 import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from './lib/format'
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
+import { loadLang, saveLang, translations, I18nContext, useT, type Lang, type Translations } from './lib/i18n'
 import {
   resolveNetworkConfig,
   getLnTxTrace,
@@ -78,38 +79,38 @@ function hexTimestampToLocalTimeLabel(value: unknown): string {
   return date.toLocaleString()
 }
 
-function parseTlcStatus(value: unknown): { direction: string; label: string } {
+function parseTlcStatus(value: unknown, t: Translations): { direction: string; label: string } {
   if (typeof value === 'string') {
-    return { direction: '未知', label: value }
+    return { direction: t.dirUnknown, label: value }
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { direction: '未知', label: '未知' }
+    return { direction: t.dirUnknown, label: t.dirUnknown }
   }
   const obj = value as JsonObj
   const keys = Object.keys(obj)
-  if (!keys.length) return { direction: '未知', label: '未知' }
+  if (!keys.length) return { direction: t.dirUnknown, label: t.dirUnknown }
   const dirKey = keys[0]
   const direction =
-    dirKey === 'Outbound' ? '出站' : dirKey === 'Inbound' ? '入站' : dirKey
+    dirKey === 'Outbound' ? t.dirOutbound : dirKey === 'Inbound' ? t.dirInbound : dirKey
   const inner = obj[dirKey]
 
   if (typeof inner === 'string') {
     const code = inner
     if (dirKey === 'Outbound') {
-      if (code === 'LocalAnnounced') return { direction, label: '已创建，等待对端确认' }
-      if (code === 'Committed') return { direction, label: '已提交，等待后续结果' }
-      if (code === 'RemoteRemoved') return { direction, label: '已被对端移除' }
-      if (code === 'RemoveWaitPrevAck') return { direction, label: '移除中，等待前一个 ACK' }
-      if (code === 'RemoveWaitAck') return { direction, label: '移除中，等待 ACK 确认' }
-      if (code === 'RemoveAckConfirmed') return { direction, label: '移除已确认' }
+      if (code === 'LocalAnnounced') return { direction, label: t.tlcOutboundLocalAnnounced }
+      if (code === 'Committed') return { direction, label: t.tlcOutboundCommitted }
+      if (code === 'RemoteRemoved') return { direction, label: t.tlcOutboundRemoteRemoved }
+      if (code === 'RemoveWaitPrevAck') return { direction, label: t.tlcOutboundRemoveWaitPrevAck }
+      if (code === 'RemoveWaitAck') return { direction, label: t.tlcOutboundRemoveWaitAck }
+      if (code === 'RemoveAckConfirmed') return { direction, label: t.tlcOutboundRemoveAckConfirmed }
     }
     if (dirKey === 'Inbound') {
-      if (code === 'RemoteAnnounced') return { direction, label: '对端已创建，等待本地提交' }
-      if (code === 'AnnounceWaitPrevAck') return { direction, label: '创建中，等待前一个 ACK' }
-      if (code === 'AnnounceWaitAck') return { direction, label: '创建中，等待 ACK 确认' }
-      if (code === 'Committed') return { direction, label: '已提交，等待后续结果' }
-      if (code === 'LocalRemoved') return { direction, label: '本地已移除，等待 ACK' }
-      if (code === 'RemoveAckConfirmed') return { direction, label: '移除已确认' }
+      if (code === 'RemoteAnnounced') return { direction, label: t.tlcInboundRemoteAnnounced }
+      if (code === 'AnnounceWaitPrevAck') return { direction, label: t.tlcInboundAnnounceWaitPrevAck }
+      if (code === 'AnnounceWaitAck') return { direction, label: t.tlcInboundAnnounceWaitAck }
+      if (code === 'Committed') return { direction, label: t.tlcInboundCommitted }
+      if (code === 'LocalRemoved') return { direction, label: t.tlcInboundLocalRemoved }
+      if (code === 'RemoveAckConfirmed') return { direction, label: t.tlcInboundRemoveAckConfirmed }
     }
     return { direction, label: code }
   }
@@ -321,11 +322,20 @@ function fallbackCopy(text: string) {
     document.body.removeChild(textarea)
   } catch (err) {
     console.error('Fallback copy failed:', err)
-    alert('复制失败，请手动复制')
+    alert('Copy failed')
   }
 }
 
 function App() {
+  const [lang, setLang] = useState<Lang>(() => loadLang())
+  const t = translations[lang]
+  const toggleLang = useCallback(() => {
+    setLang((prev) => {
+      const next = prev === 'zh' ? 'en' : 'zh'
+      saveLang(next)
+      return next
+    })
+  }, [])
   const [nodes, setNodes] = useState<MonitoredNode[]>(() => loadNodes())
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     nodes[0]?.id ?? null,
@@ -765,7 +775,7 @@ function App() {
           forwardingParts.push(`#${String(forwardingTlcIdRaw)}`)
         }
         const forwardingLabel = forwardingParts.length ? forwardingParts.join(' · ') : null
-        const statusInfo = parseTlcStatus(tlc.status)
+        const statusInfo = parseTlcStatus(tlc.status, t)
         rows.push({
           channelIdShort,
           channelStateLabel,
@@ -788,12 +798,12 @@ function App() {
         return b.expiryVal - a.expiryVal
       }
       // '入站' (Inbound) should come before '出站' (Outbound)
-      const dirA = a.directionLabel === '入站' ? 0 : 1
-      const dirB = b.directionLabel === '入站' ? 0 : 1
+      const dirA = a.directionLabel === t.dirInbound ? 0 : 1
+      const dirB = b.directionLabel === t.dirInbound ? 0 : 1
       return dirA - dirB
     })
     return rows
-  }, [details])
+  }, [details, t])
 
   const groupedPendingTlcs = useMemo(() => {
     const groups: Record<string, typeof pendingTlcRows> = {}
@@ -857,7 +867,7 @@ function App() {
             const expiryLabel = hexMillisToLocalTimeLabel(tlc.expiry)
             const expiryVal = hexToNumberMaybe(tlc.expiry) ?? 0
             const isExpired = expiryVal > 0 && expiryVal < Date.now()
-            const statusInfo = parseTlcStatus(tlc.status)
+            const statusInfo = parseTlcStatus(tlc.status, t)
 
             const forwardingChannelRaw = tlc.forwarding_channel_id
             const forwardingTlcIdRaw = tlc.forwarding_tlc_id
@@ -908,8 +918,8 @@ function App() {
         if (a.expiryVal !== b.expiryVal) {
           return b.expiryVal - a.expiryVal
         }
-        const dirA = a.directionLabel === '出站' ? 0 : 1
-        const dirB = b.directionLabel === '出站' ? 0 : 1
+        const dirA = a.directionLabel === t.dirOutbound ? 0 : 1
+        const dirB = b.directionLabel === t.dirOutbound ? 0 : 1
         return dirA - dirB
       })
 
@@ -921,7 +931,7 @@ function App() {
         error: err instanceof Error ? err.message : String(err),
       })
     }
-  }, [nodes, paymentHashQuery])
+  }, [nodes, paymentHashQuery, t])
 
   const runChannelOutpointSearch = useCallback(async () => {
     const query = channelOutpointQuery.trim()
@@ -1028,7 +1038,7 @@ function App() {
       } catch (err) {
         setRpcState('error')
         setRpcResponse(
-          `参数 JSON 解析失败: ${err instanceof Error ? err.message : String(err)}`,
+          t.paramsJsonError(err instanceof Error ? err.message : String(err)),
         )
         return
       }
@@ -1045,7 +1055,7 @@ function App() {
       setRpcState('error')
       setRpcResponse(err instanceof Error ? err.message : String(err))
     }
-  }, [selectedNode, rpcMethod, rpcParams])
+  }, [selectedNode, rpcMethod, rpcParams, t])
 
   const runNodeControl = useCallback(async () => {
     if (!selectedNode) return
@@ -1108,24 +1118,28 @@ function App() {
   }, [selectedNode, ncActiveOp, ncConnectAddr, ncConnectSave, ncOpenPeerId, ncOpenAmount, ncOpenPublic, ncInvoiceAmount, ncInvoiceCurrency, ncInvoiceDesc, ncInvoiceHashAlgo, ncPayInvoice, ncPayKeysend, ncPayTarget, ncPayAmount, ncShutdownChannelId, ncShutdownForce, ncGetPaymentHash, ncGetInvoiceHash])
 
   return (
+    <I18nContext.Provider value={t}>
     <div className="appShell">
       <aside className="side">
         <div className="brand">
           <div className="brandTitle">FIBER MONITOR</div>
-          <div className="brandSubtitle">多节点监控 · JSON-RPC 观测台</div>
+          <div className="brandSubtitle">{t.brandSubtitle}</div>
+          <button className="btn btnGhost" onClick={toggleLang} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 10 }}>
+            {lang === 'zh' ? 'EN' : '中文'}
+          </button>
         </div>
 
         <div className="sideActions">
           <button className="btn" onClick={() => setModalOpen(true)}>
             <span>＋</span>
-            <span>添加监控节点</span>
+            <span>{t.addNode}</span>
           </button>
           <button
             className="btn btnGhost"
             onClick={() => void pollSummaries()}
             disabled={!nodes.length || overviewRefreshState.status === 'refreshing'}
           >
-            刷新概览
+            {t.refreshOverview}
           </button>
         </div>
 
@@ -1133,11 +1147,11 @@ function App() {
           {nodes.length === 0 ? (
             <div className="dangerRow">
               <div>
-                <div style={{ fontWeight: 600, fontSize: 12 }}>未添加任何节点</div>
-                <div className="smallNote">先添加 RPC 地址，然后系统会拉取 node_info / list_channels / list_peers / graph_*。</div>
+                <div style={{ fontWeight: 600, fontSize: 12 }}>{t.noNodes}</div>
+                <div className="smallNote">{t.noNodesHint}</div>
               </div>
               <button className="btn" onClick={() => setModalOpen(true)}>
-                添加
+                {t.add}
               </button>
             </div>
           ) : null}
@@ -1182,7 +1196,7 @@ function App() {
                       }}
                       style={{ padding: '6px 10px', borderRadius: 12 }}
                     >
-                      复制
+                      {t.copy}
                     </button>
                     <button
                       className="btn btnGhost"
@@ -1192,7 +1206,7 @@ function App() {
                       }}
                       style={{ padding: '6px 10px', borderRadius: 12 }}
                     >
-                      删除
+                      {t.delete}
                     </button>
                   </div>
                 </div>
@@ -1207,7 +1221,7 @@ function App() {
           <div className="titleBlock">
             <div className="title">NODES DASHBOARD</div>
             <div className="subtitle">
-              通过代理接口调用 Fiber JSON-RPC：node_info · list_peers · list_channels · graph_nodes · graph_channels
+              {t.subtitle}
             </div>
           </div>
           <div className="mainActions">
@@ -1234,7 +1248,7 @@ function App() {
                 className={viewMode === 'rpcDebug' ? 'btn' : 'btn btnGhost'}
                 onClick={() => setViewMode('rpcDebug')}
               >
-                RPC 调试
+                {t.rpcDebugTab}
               </button>
               <button
                 className={viewMode === 'commitmentTrace' ? 'btn' : 'btn btnGhost'}
@@ -1256,7 +1270,7 @@ function App() {
                 onClick={() => void refreshDetails()}
                 disabled={!selectedNode}
               >
-                刷新当前节点
+                {t.refreshNode}
               </button>
             ) : null}
           </div>
@@ -1273,7 +1287,7 @@ function App() {
                 onClick={() => setIsOverviewCollapsed((v) => !v)}
                 style={{ padding: '6px 10px', borderRadius: 12 }}
               >
-                {isOverviewCollapsed ? '展开' : '收起'}
+                {isOverviewCollapsed ? t.expand : t.collapse}
               </button>
             </div>
             <div className="cardBody" style={{ padding: 0 }}>
@@ -1281,7 +1295,7 @@ function App() {
               overviewRefreshProgress.completed > 0 ? (
                 <div style={{ padding: 12, paddingBottom: 0 }}>
                   <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
-                    概览刷新进度：{overviewRefreshProgress.completed}/
+                    {t.overviewProgress}{overviewRefreshProgress.completed}/
                     {overviewRefreshProgress.total} ({overviewRefreshPercent}%)
                   </div>
                   <div
@@ -1307,7 +1321,7 @@ function App() {
               ) : null}
               {isOverviewCollapsed ? (
                 <div className="muted" style={{ padding: 12 }}>
-                  概览已折叠，点击「{isOverviewCollapsed ? '展开' : '收起'}」按钮查看。
+                  {t.overviewCollapsed(isOverviewCollapsed ? t.expand : t.collapse)}
                 </div>
               ) : (
                 <table className="table">
@@ -1392,7 +1406,7 @@ function App() {
               </div>
               <div className="cardBody">
                 {!selectedNode ? (
-                  <div className="muted">选择一个节点以查看详细信息。</div>
+                  <div className="muted">{t.selectNodeDetail}</div>
                 ) : (
                   <div className="kvGrid">
                     <div className="k">RPC URL</div>
@@ -1401,7 +1415,7 @@ function App() {
                     <div className="v">
                       {selectedNode.token ? <span className="pill">Bearer token</span> : <span className="dim">None</span>}
                     </div>
-                    <div className="k">状态</div>
+                    <div className="k">{t.status}</div>
                     <div className="v">
                       {selectedSummary ? (
                         <span className={`pill ${selectedSummary.ok ? 'pillOk' : 'pillBad'}`}>
@@ -1416,7 +1430,7 @@ function App() {
                         </span>
                       ) : null}
                     </div>
-                    <div className="k">最后更新</div>
+                    <div className="k">{t.lastUpdate}</div>
                     <div className="v">
                       {selectedSummary ? new Date(selectedSummary.updatedAt).toLocaleString() : '—'}
                     </div>
@@ -1434,15 +1448,15 @@ function App() {
               </div>
               <div className="cardBody">
                 {detailsState.status === 'loading' ? (
-                  <div className="muted">拉取中…</div>
+                  <div className="muted">{t.fetching}</div>
                 ) : detailsState.status === 'error' ? (
                   <div className="dangerRow">
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: 12 }}>RPC 拉取失败</div>
+                      <div style={{ fontWeight: 600, fontSize: 12 }}>{t.fetchFailed}</div>
                       <div className="smallNote">{detailsState.error}</div>
                     </div>
                     <button className="btn" onClick={() => void refreshDetails()}>
-                      重试
+                      {t.retry}
                     </button>
                   </div>
                 ) : details ? (
@@ -1502,7 +1516,7 @@ function App() {
                     ) : (
                       <tr>
                         <td colSpan={3} className="muted" style={{ padding: 14 }}>
-                          {selectedNode ? '暂无 peers 或节点不可达。' : '—'}
+                          {selectedNode ? t.noPeers : '—'}
                         </td>
                       </tr>
                     )}
@@ -1517,14 +1531,13 @@ function App() {
                   <div className="cardTitle">Graph Nodes (graph_nodes)</div>
                   <div className="muted">
                     {details
-                      ? `本页 ${(graphNodesPages[graphNodesCurrentPageIndex]?.nodes?.length ?? 0)} 条 · 已加载 ${graphNodesPages.length} 页`
+                      ? t.pageInfo(graphNodesPages[graphNodesCurrentPageIndex]?.nodes?.length ?? 0, graphNodesPages.length)
                       : '—'}
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span className="muted" style={{ fontSize: 12 }}>
-                    第 {graphNodesCurrentPageIndex + 1} 页
-                    {graphNodesPages.length > 1 ? ` / 共 ${graphNodesPages.length} 页` : ''}
+                    {t.pageLabel(graphNodesCurrentPageIndex + 1, graphNodesPages.length)}
                   </span>
                   <button
                     className="btn btnGhost"
@@ -1532,7 +1545,7 @@ function App() {
                     disabled={graphNodesCurrentPageIndex === 0}
                     style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
                   >
-                    上一页
+                    {t.prevPage}
                   </button>
                   <button
                     className="btn btnGhost"
@@ -1544,7 +1557,7 @@ function App() {
                     }
                     style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
                   >
-                    {graphNodesLoading ? '加载中…' : '下一页'}
+                    {graphNodesLoading ? t.loading : t.nextPage}
                   </button>
                 </div>
               </div>
@@ -1596,7 +1609,7 @@ function App() {
                       ) : (
                         <tr>
                           <td colSpan={6} className="muted" style={{ padding: 14 }}>
-                            本页无数据
+                            {t.noData}
                           </td>
                         </tr>
                       )}
@@ -1604,7 +1617,7 @@ function App() {
                   </table>
                 ) : (
                   <div className="muted" style={{ padding: 14 }}>
-                    {details ? '暂无 graph 数据' : '选择节点后可查看 graph_nodes'}
+                    {details ? t.noGraphNodes : t.selectNodeGraphNodes}
                   </div>
                 )}
               </div>
@@ -1741,7 +1754,7 @@ function App() {
                   ) : (
                     <tr>
                       <td colSpan={10} className="muted" style={{ padding: 14 }}>
-                        {selectedNode ? '暂无 channels 或节点不可达。' : '—'}
+                        {selectedNode ? t.noChannels : '—'}
                       </td>
                     </tr>
                   )}
@@ -1768,7 +1781,7 @@ function App() {
                   }}
                 >
                   <div className="muted" style={{ fontSize: 11 }}>
-                    Pending TLCs（来自 list_channels.pending_tlcs）
+                    {t.pendingTlcsFrom}
                   </div>
                   <span className="badge">
                     {pendingTlcRows.length} pending
@@ -1811,7 +1824,7 @@ function App() {
                               }}
                               style={{ padding: '4px 8px', borderRadius: 12, fontSize: 11 }}
                             >
-                              复制
+                              {t.copy}
                             </button>
                           ) : null}
                         </div>
@@ -1831,7 +1844,7 @@ function App() {
                             <th>dir</th>
                             <th>amount</th>
                             <th>expiry</th>
-                            <th>TLC 状态</th>
+                            <th>{t.tlcStatus}</th>
                             <th>forwarding</th>
                           </tr>
                         </thead>
@@ -1853,7 +1866,7 @@ function App() {
                                 {row.expiryLabel}
                                 {row.isExpired ? (
                                   <span style={{ color: 'var(--color-danger)', marginLeft: 4, fontSize: 10 }}>
-                                    (已过期)
+                                    ({t.expired})
                                   </span>
                                 ) : null}
                               </td>
@@ -1878,14 +1891,13 @@ function App() {
                 <div className="cardTitle">Graph Channels (graph_channels)</div>
                 <div className="muted">
                   {details
-                    ? `本页 ${(graphChannelsPages[graphChannelsCurrentPageIndex]?.channels?.length ?? 0)} 条 · 已加载 ${graphChannelsPages.length} 页`
+                    ? t.pageInfo(graphChannelsPages[graphChannelsCurrentPageIndex]?.channels?.length ?? 0, graphChannelsPages.length)
                     : '—'}
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <span className="muted" style={{ fontSize: 12 }}>
-                  第 {graphChannelsCurrentPageIndex + 1} 页
-                  {graphChannelsPages.length > 1 ? ` / 共 ${graphChannelsPages.length} 页` : ''}
+                  {t.pageLabel(graphChannelsCurrentPageIndex + 1, graphChannelsPages.length)}
                 </span>
                 <button
                   className="btn btnGhost"
@@ -1893,7 +1905,7 @@ function App() {
                   disabled={graphChannelsCurrentPageIndex === 0}
                   style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
                 >
-                  上一页
+                  {t.prevPage}
                 </button>
                 <button
                   className="btn btnGhost"
@@ -1905,7 +1917,7 @@ function App() {
                   }
                   style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
                 >
-                  {graphChannelsLoading ? '加载中…' : '下一页'}
+                  {graphChannelsLoading ? t.loading : t.nextPage}
                 </button>
               </div>
             </div>
@@ -1955,7 +1967,7 @@ function App() {
                     ) : (
                       <tr>
                         <td colSpan={6} className="muted" style={{ padding: 14 }}>
-                          本页无数据
+                          {t.noData}
                         </td>
                       </tr>
                     )}
@@ -1963,7 +1975,7 @@ function App() {
                 </table>
               ) : (
                 <div className="muted" style={{ padding: 14 }}>
-                  {details ? '暂无 graph channels 数据' : '选择节点后可查看 graph_channels'}
+                  {details ? t.noGraphChannels : t.selectNodeGraphChannels}
                 </div>
               )}
             </div>
@@ -1975,13 +1987,13 @@ function App() {
           <div className="layout">
             <section className="card">
               <div className="cardHeader">
-                <div className="cardTitle">Payment Hash 视图</div>
+                <div className="cardTitle">{t.paymentHashView}</div>
                 <div className="muted">
                   {paymentSearchState.status === 'searching'
-                    ? `扫描中 ${paymentSearchProgress.completed}/${paymentSearchProgress.total}`
+                    ? t.scanning(paymentSearchProgress.completed, paymentSearchProgress.total)
                     : paymentSearchState.status === 'done'
-                    ? `找到 ${paymentSearchResults.length} 条匹配`
-                    : '输入 Payment Hash 并开始扫描 pending_tlcs'}
+                    ? t.foundMatches(paymentSearchResults.length)
+                    : t.paymentHashHint}
                 </div>
               </div>
               <div className="cardBody">
@@ -1991,10 +2003,10 @@ function App() {
                     className="input"
                     value={paymentHashQuery}
                     onChange={(e) => setPaymentHashQuery(e.target.value)}
-                    placeholder="例如：0x1234..."
+                    placeholder={t.paymentHashPlaceholder}
                   />
                   <div className="smallNote">
-                    将使用 list_channels 扫描所有节点的 pending_tlcs，并按照 Payment Hash 匹配。
+                    {t.paymentHashNote}
                   </div>
                 </div>
                 <div className="modalActions" style={{ padding: 0, marginBottom: 12 }}>
@@ -2008,14 +2020,14 @@ function App() {
                       !nodes.length
                     }
                   >
-                    扫描 pending_tlcs
+                    {t.scanPendingTlcs}
                   </button>
                 </div>
                 {paymentSearchState.status === 'searching' ||
                 paymentSearchProgress.completed > 0 ? (
                   <div style={{ marginBottom: 12 }}>
                     <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
-                      扫描进度：{paymentSearchProgress.completed}/{paymentSearchProgress.total} (
+                      {t.scanProgress}{paymentSearchProgress.completed}/{paymentSearchProgress.total} (
                       {progressPercent}%)
                     </div>
                     <div
@@ -2042,7 +2054,7 @@ function App() {
                 {paymentSearchState.status === 'error' ? (
                   <div className="dangerRow" style={{ marginBottom: 12 }}>
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: 12 }}>扫描失败</div>
+                      <div style={{ fontWeight: 600, fontSize: 12 }}>{t.scanFailed}</div>
                       <div className="smallNote">{paymentSearchState.error}</div>
                     </div>
                   </div>
@@ -2058,7 +2070,7 @@ function App() {
                           <th>dir</th>
                           <th>amount</th>
                           <th>expiry</th>
-                          <th>TLC 状态</th>
+                          <th>{t.tlcStatus}</th>
                           <th>forwarding</th>
                           <th>RPC</th>
                         </tr>
@@ -2087,7 +2099,7 @@ function App() {
                               {row.expiryLabel}
                               {row.isExpired ? (
                                 <span style={{ color: 'var(--color-danger)', marginLeft: 4, fontSize: 10 }}>
-                                  (已过期)
+                                  ({t.expired})
                                 </span>
                               ) : null}
                             </td>
@@ -2103,7 +2115,7 @@ function App() {
                   </div>
                 ) : paymentSearchState.status === 'done' ? (
                   <div className="muted" style={{ marginTop: 12 }}>
-                    未在任何节点的 pending_tlcs 中找到匹配的 Payment Hash。
+                    {t.noPaymentHashMatch}
                   </div>
                 ) : null}
               </div>
@@ -2115,13 +2127,13 @@ function App() {
           <div className="layout">
             <section className="card">
               <div className="cardHeader">
-                <div className="cardTitle">Channel Outpoint 视图</div>
+                <div className="cardTitle">{t.channelOutpointView}</div>
                 <div className="muted">
                   {channelOutpointSearchState.status === 'searching'
-                    ? `扫描中 ${channelOutpointSearchProgress.completed}/${channelOutpointSearchProgress.total}`
+                    ? t.scanning(channelOutpointSearchProgress.completed, channelOutpointSearchProgress.total)
                     : channelOutpointSearchState.status === 'done'
-                    ? `找到 ${channelOutpointSearchResults.length} 条匹配`
-                    : '输入 Channel Outpoint 并开始扫描所有节点的 channels'}
+                    ? t.foundMatches(channelOutpointSearchResults.length)
+                    : t.channelOutpointHint}
                 </div>
               </div>
               <div className="cardBody">
@@ -2131,10 +2143,10 @@ function App() {
                     className="input"
                     value={channelOutpointQuery}
                     onChange={(e) => setChannelOutpointQuery(e.target.value)}
-                    placeholder="例如：0x9bb2a8a4bebaf793..."
+                    placeholder={t.channelOutpointPlaceholder}
                   />
                   <div className="smallNote">
-                    将使用 list_channels 扫描所有节点的 channels，并按照 Channel Outpoint 匹配（支持部分匹配）。
+                    {t.channelOutpointNote}
                   </div>
                 </div>
                 <div className="modalActions" style={{ padding: 0, marginBottom: 12 }}>
@@ -2148,14 +2160,14 @@ function App() {
                       !nodes.length
                     }
                   >
-                    扫描 channels
+                    {t.scanChannels}
                   </button>
                 </div>
                 {channelOutpointSearchState.status === 'searching' ||
                 channelOutpointSearchProgress.completed > 0 ? (
                   <div style={{ marginBottom: 12 }}>
                     <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
-                      扫描进度：{channelOutpointSearchProgress.completed}/{channelOutpointSearchProgress.total} (
+                      {t.scanProgress}{channelOutpointSearchProgress.completed}/{channelOutpointSearchProgress.total} (
                       {channelOutpointSearchProgress.total > 0
                         ? Math.round((channelOutpointSearchProgress.completed / channelOutpointSearchProgress.total) * 100)
                         : 0}%)
@@ -2186,7 +2198,7 @@ function App() {
                 {channelOutpointSearchState.status === 'error' ? (
                   <div className="dangerRow" style={{ marginBottom: 12 }}>
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: 12 }}>扫描失败</div>
+                      <div style={{ fontWeight: 600, fontSize: 12 }}>{t.scanFailed}</div>
                       <div className="smallNote">{channelOutpointSearchState.error}</div>
                     </div>
                   </div>
@@ -2237,7 +2249,7 @@ function App() {
                   </div>
                 ) : channelOutpointSearchState.status === 'done' ? (
                   <div className="muted" style={{ marginTop: 12 }}>
-                    未在任何节点的 channels 中找到匹配的 Channel Outpoint。
+                    {t.noChannelOutpointMatch}
                   </div>
                 ) : null}
               </div>
@@ -2249,19 +2261,19 @@ function App() {
           <div className="layout">
             <section className="card">
               <div className="cardHeader">
-                <div className="cardTitle">RPC 调试</div>
+                <div className="cardTitle">{t.rpcDebug}</div>
                 <div className="muted">
-                  {selectedNode ? selectedNode.name : '请选择左侧的节点'}
+                  {selectedNode ? selectedNode.name : t.selectNodeLeft}
                 </div>
               </div>
               <div className="cardBody">
                 {!selectedNode ? (
-                  <div className="muted">需要先在左侧选择一个节点。</div>
+                  <div className="muted">{t.selectNodeFirst}</div>
                 ) : (
                   <>
                     {/* 快捷调用：一键填充 Method + Params 模板，便于 send_payment/new_invoice/parse_invoice 等常用 RPC */}
                     <div className="field">
-                      <div className="label">快捷调用</div>
+                      <div className="label">{t.quickCall}</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
                         {RPC_QUICK_PRESETS.map((p) => (
                           <button
@@ -2285,7 +2297,7 @@ function App() {
                         className="input"
                         value={rpcMethod}
                         onChange={(e) => setRpcMethod(e.target.value)}
-                        placeholder="例如：node_info"
+                        placeholder={t.methodPlaceholder}
                       />
                     </div>
                     <div className="field" style={{ marginTop: 10 }}>
@@ -2299,7 +2311,7 @@ function App() {
                         }}
                         value={rpcParams}
                         onChange={(e) => setRpcParams(e.target.value)}
-                        placeholder="例如：{ &quot;include_closed&quot;: true }"
+                        placeholder={t.paramsPlaceholder}
                       />
                     </div>
                     <div className="modalActions" style={{ padding: 0, marginTop: 12 }}>
@@ -2309,12 +2321,12 @@ function App() {
                         onClick={() => void runRpcCall()}
                         disabled={rpcState === 'pending'}
                       >
-                        调用
+                        {t.call}
                       </button>
                     </div>
                     {rpcState === 'pending' ? (
                       <div className="muted" style={{ marginTop: 8 }}>
-                        调用中…
+                        {t.calling}
                       </div>
                     ) : null}
                   </>
@@ -2324,7 +2336,7 @@ function App() {
             {/* RPC 响应区域：maxHeight + overflow 限制在卡片内滚动，pre 使用 wordBreak/overflowWrap 防止长行横向溢出 */}
             <section className="card">
               <div className="cardHeader">
-                <div className="cardTitle">RPC 响应</div>
+                <div className="cardTitle">{t.rpcResponse}</div>
               </div>
               <div
                 className="cardBody"
@@ -2336,7 +2348,7 @@ function App() {
                 }}
               >
                 {rpcState === 'idle' ? (
-                  <div className="muted">尚未调用。</div>
+                  <div className="muted">{t.notCalled}</div>
                 ) : (
                   <pre
                     style={{
@@ -2427,7 +2439,7 @@ function App() {
               const la = ctManualLockArgs.trim()
               const w = ctManualWitness.trim()
               if (!la || !w) {
-                setCtParseError('请提供 Lock Script Args 和 Witness 数据。')
+                setCtParseError(t.provideLockAndWitness)
                 return
               }
               try {
@@ -2451,14 +2463,14 @@ function App() {
                   <div className="cardTitle" style={{ fontSize: 14 }}>Node Control Panel</div>
                 </div>
                 <div className="muted">
-                  {selectedNode ? selectedNode.name : '← 请先选择节点'}
+                  {selectedNode ? selectedNode.name : t.selectNodeControl}
                 </div>
               </div>
               <div className="cardBody" style={{ padding: '8px 18px 18px' }}>
                 {!selectedNode ? (
                   <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)' }}>
                     <div style={{ fontSize: 40, marginBottom: 12 }}>🔌</div>
-                    <div>请在左侧面板选择一个节点以开始操控</div>
+                    <div>{t.selectNodeControlHint}</div>
                   </div>
                 ) : (
                   <>
@@ -2489,7 +2501,7 @@ function App() {
                           <div className="ncFormTitle">
                             <span style={{ fontSize: 18 }}>🔗</span> Connect to Peer
                           </div>
-                          <div className="ncFormDesc">连接到远程 Fiber 节点，需要提供 MultiAddr 格式地址</div>
+                          <div className="ncFormDesc">{t.connectPeerDesc}</div>
                           <div className="field">
                             <div className="label">Peer Address (MultiAddr)</div>
                             <input
@@ -2501,7 +2513,7 @@ function App() {
                           </div>
                           <label className="ncCheckLabel">
                             <input type="checkbox" checked={ncConnectSave} onChange={(e) => setNcConnectSave(e.target.checked)} />
-                            <span>保存到 peer store</span>
+                            <span>{t.saveToPeerStore}</span>
                           </label>
                         </div>
                       )}
@@ -2511,7 +2523,7 @@ function App() {
                           <div className="ncFormTitle">
                             <span style={{ fontSize: 18 }}>📡</span> Open Channel
                           </div>
-                          <div className="ncFormDesc">向已连接的 Peer 发起通道开设请求</div>
+                          <div className="ncFormDesc">{t.openChannelDesc}</div>
                           <div className="field">
                             <div className="label">Peer ID</div>
                             <input
@@ -2535,7 +2547,7 @@ function App() {
                           </div>
                           <label className="ncCheckLabel">
                             <input type="checkbox" checked={ncOpenPublic} onChange={(e) => setNcOpenPublic(e.target.checked)} />
-                            <span>Public channel（广播到网络，可用于转发 TLC）</span>
+                            <span>{t.publicChannelLabel}</span>
                           </label>
                         </div>
                       )}
@@ -2545,7 +2557,7 @@ function App() {
                           <div className="ncFormTitle">
                             <span style={{ fontSize: 18 }}>🧾</span> New Invoice
                           </div>
-                          <div className="ncFormDesc">生成一张新的收款 Invoice</div>
+                          <div className="ncFormDesc">{t.newInvoiceDesc}</div>
                           <div className="field">
                             <div className="label">Amount (hex)</div>
                             <input
@@ -2595,7 +2607,7 @@ function App() {
                           <div className="ncFormTitle">
                             <span style={{ fontSize: 18 }}>💸</span> Send Payment
                           </div>
-                          <div className="ncFormDesc">通过 Invoice 或 Keysend 发送付款</div>
+                          <div className="ncFormDesc">{t.sendPaymentDesc}</div>
                           <div className="ncToggleRow">
                             <button
                               className={`ncToggleBtn ${!ncPayKeysend ? 'ncToggleBtnActive' : ''}`}
@@ -2654,7 +2666,7 @@ function App() {
                           <div className="ncFormTitle">
                             <span style={{ fontSize: 18 }}>🔍</span> Get Payment
                           </div>
-                          <div className="ncFormDesc">通过 Payment Hash 查询付款状态和详情</div>
+                          <div className="ncFormDesc">{t.getPaymentDesc}</div>
                           <div className="field">
                             <div className="label">Payment Hash</div>
                             <input
@@ -2672,7 +2684,7 @@ function App() {
                           <div className="ncFormTitle">
                             <span style={{ fontSize: 18 }}>📋</span> Get Invoice
                           </div>
-                          <div className="ncFormDesc">通过 Payment Hash 查询 Invoice 详情和状态</div>
+                          <div className="ncFormDesc">{t.getInvoiceDesc}</div>
                           <div className="field">
                             <div className="label">Payment Hash</div>
                             <input
@@ -2690,7 +2702,7 @@ function App() {
                           <div className="ncFormTitle">
                             <span style={{ fontSize: 18 }}>🚪</span> Shutdown Channel
                           </div>
-                          <div className="ncFormDesc">关闭一个已存在的通道</div>
+                          <div className="ncFormDesc">{t.shutdownChannelDesc}</div>
                           <div className="field">
                             <div className="label">Channel ID</div>
                             <input
@@ -2702,10 +2714,10 @@ function App() {
                           </div>
                           <label className="ncCheckLabel">
                             <input type="checkbox" checked={ncShutdownForce} onChange={(e) => setNcShutdownForce(e.target.checked)} />
-                            <span>⚠️ 强制关闭 (Force close)</span>
+                            <span>{t.forceCloseLabel}</span>
                           </label>
                           {ncShutdownForce && (
-                            <div className="ncWarn">强制关闭将使用默认参数，可能需要等待超时期满。</div>
+                            <div className="ncWarn">{t.forceCloseWarn}</div>
                           )}
                         </div>
                       )}
@@ -2721,13 +2733,13 @@ function App() {
                           ) : (
                             <span style={{ fontSize: 16 }}>▶</span>
                           )}
-                          {ncState === 'pending' ? '执行中…' : '执行'}
+                          {ncState === 'pending' ? t.executing : t.execute}
                         </button>
                         {ncState === 'success' && (
-                          <span className="ncStatusBadge ncStatusOk">✓ 成功</span>
+                          <span className="ncStatusBadge ncStatusOk">{t.success}</span>
                         )}
                         {ncState === 'error' && (
-                          <span className="ncStatusBadge ncStatusBad">✗ 失败</span>
+                          <span className="ncStatusBadge ncStatusBad">{t.failed}</span>
                         )}
                       </div>
                     </div>
@@ -2740,7 +2752,7 @@ function App() {
               <section className="card">
                 <div className="cardHeader">
                   <div className="cardTitle">
-                    {ncState === 'success' ? '✅ 执行结果' : ncState === 'error' ? '❌ 错误信息' : '⏳ 响应'}
+                    {ncState === 'success' ? t.execResult : ncState === 'error' ? t.execError : t.response}
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     {ncState !== 'pending' && ncResult && (
@@ -2749,7 +2761,7 @@ function App() {
                         style={{ fontSize: 11, padding: '4px 10px' }}
                         onClick={() => { void navigator.clipboard.writeText(ncResult) }}
                       >
-                        📋 复制
+                        {t.copyBtn}
                       </button>
                     )}
                   </div>
@@ -2763,7 +2775,7 @@ function App() {
                   }}
                 >
                   {ncState === 'pending' ? (
-                    <div style={{ padding: '14px 16px' }} className="muted">请求中…</div>
+                    <div style={{ padding: '14px 16px' }} className="muted">{t.requesting}</div>
                   ) : ncState === 'error' ? (
                     <pre
                       className="ncResultPre ncResultError"
@@ -2774,7 +2786,7 @@ function App() {
                   ) : ncState === 'success' && ncResultObj != null ? (
                     <NcFormattedResult op={ncResultOp} result={ncResultObj} rawJson={ncResult} />
                   ) : (
-                    <div style={{ padding: '14px 16px' }} className="muted">(空响应)</div>
+                    <div style={{ padding: '14px 16px' }} className="muted">{t.emptyResponse}</div>
                   )}
                 </div>
               </section>
@@ -2797,6 +2809,7 @@ function App() {
         ) : null}
       </main>
     </div>
+    </I18nContext.Provider>
   )
 }
 
@@ -2810,6 +2823,7 @@ function NcResultKV({ label, value, mono }: { label: string; value: React.ReactN
 }
 
 function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknown; rawJson: string }) {
+  const t = useT()
   const [showRaw, setShowRaw] = useState(false)
   const obj = asObj(result)
 
@@ -2833,17 +2847,17 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
         {paymentHash && <NcResultKV label="Payment Hash" value={paymentHash} mono />}
         {status && (
           <NcResultKV
-            label="状态"
+            label={t.statusLabel}
             value={<span className={`pill ${statusPillClass(status)}`}>{status}</span>}
           />
         )}
-        {createdAt && <NcResultKV label="创建时间" value={hexMillisToLocalTimeLabel(createdAt)} />}
-        {updatedAt && <NcResultKV label="最后更新" value={hexMillisToLocalTimeLabel(updatedAt)} />}
-        {fee != null && <NcResultKV label="手续费" value={formatAmountWithHex(fee)} />}
-        {failedError && <NcResultKV label="错误" value={<span style={{ color: 'var(--bad)' }}>{failedError}</span>} />}
+        {createdAt && <NcResultKV label={t.createdAt} value={hexMillisToLocalTimeLabel(createdAt)} />}
+        {updatedAt && <NcResultKV label={t.lastUpdated} value={hexMillisToLocalTimeLabel(updatedAt)} />}
+        {fee != null && <NcResultKV label={t.feeLabel} value={formatAmountWithHex(fee)} />}
+        {failedError && <NcResultKV label={t.errorLabel} value={<span style={{ color: 'var(--bad)' }}>{failedError}</span>} />}
         {routers && routers.length > 0 && (
           <NcResultKV
-            label={`路由 (${routers.length})`}
+            label={t.routeLabel(routers.length)}
             value={
               <div style={{ display: 'grid', gap: 6 }}>
                 {routers.map((r, i) => {
@@ -2909,14 +2923,14 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
         )}
         {status && (
           <NcResultKV
-            label="状态"
+            label={t.statusLabel}
             value={<span className={`pill ${statusPillClass(status)}`}>{status}</span>}
           />
         )}
         {payeeHash && <NcResultKV label="Payment Hash" value={payeeHash} mono />}
-        {amount != null && <NcResultKV label="金额" value={formatAmountWithHex(amount)} />}
-        {currency && <NcResultKV label="币种" value={currency} />}
-        {desc && <NcResultKV label="描述" value={desc} />}
+        {amount != null && <NcResultKV label={t.amountLabel} value={formatAmountWithHex(amount)} />}
+        {currency && <NcResultKV label={t.currencyLabel} value={currency} />}
+        {desc && <NcResultKV label={t.descLabel} value={desc} />}
       </>
     )
   }
@@ -2928,7 +2942,7 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
 
   const renderGenericSuccess = () => {
     if (result == null) {
-      return <div style={{ padding: '4px 0', color: 'var(--accent)' }}>操作成功完成</div>
+      return <div style={{ padding: '4px 0', color: 'var(--accent)' }}>{t.operationSuccess}</div>
     }
     return null
   }
@@ -2961,7 +2975,7 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
           style={{ fontSize: 11, padding: '4px 10px' }}
           onClick={() => setShowRaw(!showRaw)}
         >
-          {showRaw ? '▼ 收起原始数据' : '▶ 查看原始 JSON'}
+          {showRaw ? t.collapseRaw : t.viewRawJson}
         </button>
         {showRaw && (
           <pre
@@ -2985,6 +2999,7 @@ function AddNodeModal({
   onAdd: (node: Omit<MonitoredNode, 'id' | 'createdAt'>) => void
   onAddBulk: (nodes: Omit<MonitoredNode, 'id' | 'createdAt'>[]) => void
 }) {
+  const t = useT()
   const [name, setName] = useState('')
   const [rpcUrl, setRpcUrl] = useState('')
   const [token, setToken] = useState('')
@@ -2996,11 +3011,11 @@ function AddNodeModal({
     const n = name.trim()
     const u = rpcUrl.trim()
     if (!u) {
-      setError('RPC URL 不能为空')
+      setError(t.rpcUrlEmpty)
       return
     }
     if (!isHttpUrl(u)) {
-      setError('RPC URL 必须是 http(s) 地址')
+      setError(t.rpcUrlInvalid)
       return
     }
     const finalName = n || safeUrlLabel(u)
@@ -3014,7 +3029,7 @@ function AddNodeModal({
   const submitBulk = () => {
     const raw = bulkText.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0)
     if (!raw.length) {
-      setError('请输入至少一行节点配置')
+      setError(t.bulkInputRequired)
       return
     }
     const nodes: Omit<MonitoredNode, 'id' | 'createdAt'>[] = []
@@ -3035,11 +3050,11 @@ function AddNodeModal({
       }
       const u = (urlPart ?? '').trim()
       if (!u) {
-        setError(`存在空的 RPC URL 行: "${line}"`)
+        setError(t.emptyRpcUrlLine(line))
         return
       }
       if (!isHttpUrl(u)) {
-        setError(`RPC URL 必须是 http(s) 地址: "${u}"`)
+        setError(t.invalidRpcUrl(u))
         return
       }
       const finalName = (namePart ?? '').trim() || safeUrlLabel(u)
@@ -3050,7 +3065,7 @@ function AddNodeModal({
       })
     }
     if (!nodes.length) {
-      setError('未解析到有效的节点配置')
+      setError(t.noParsedNodes)
       return
     }
     onAddBulk(nodes)
@@ -3062,7 +3077,7 @@ function AddNodeModal({
         <div className="modalHeader">
           <div className="modalTitle">ADD NODE</div>
           <button className="btn btnGhost" onClick={onClose} style={{ padding: '8px 10px', borderRadius: 14 }}>
-            关闭
+            {t.close}
           </button>
         </div>
         <div className="modalBody">
@@ -3075,7 +3090,7 @@ function AddNodeModal({
               }}
               style={{ padding: '6px 10px', borderRadius: 12 }}
             >
-              单个添加
+              {t.singleAdd}
             </button>
             <button
               className={mode === 'bulk' ? 'btn' : 'btn btnGhost'}
@@ -3085,7 +3100,7 @@ function AddNodeModal({
               }}
               style={{ padding: '6px 10px', borderRadius: 12 }}
             >
-              批量添加
+              {t.bulkAdd}
             </button>
           </div>
 
@@ -3096,7 +3111,7 @@ function AddNodeModal({
                 <input
                   className="input"
                   value={name}
-                  placeholder="例如: testnet-01"
+                  placeholder={t.nodeNamePlaceholder}
                   onChange={(e) => setName(e.target.value)}
                 />
               </div>
@@ -3105,7 +3120,7 @@ function AddNodeModal({
                 <input
                   className="input"
                   value={rpcUrl}
-                  placeholder="例如: http://127.0.0.1:8227"
+                  placeholder={t.rpcUrlPlaceholder}
                   onChange={(e) => setRpcUrl(e.target.value)}
                 />
               </div>
@@ -3114,25 +3129,24 @@ function AddNodeModal({
                 <input
                   className="input"
                   value={token}
-                  placeholder="Bearer token（仅填写 token 本体）"
+                  placeholder={t.tokenPlaceholder}
                   onChange={(e) => setToken(e.target.value)}
                 />
                 <div className="smallNote">
-                  代理会以 Authorization: Bearer {'{token}'} 转发到节点 RPC。
-                  请避免在不可信环境暴露 RPC 地址与 token。
+                  {t.tokenNote('{token}')}
                 </div>
               </div>
             </>
           ) : (
             <>
               <div className="field">
-                <div className="label">批量节点列表</div>
+                <div className="label">{t.bulkNodeList}</div>
                 <textarea
                   className="input"
                   value={bulkText}
                   onChange={(e) => setBulkText(e.target.value)}
                   placeholder={[
-                    '每行一个节点，支持以下格式：',
+                    t.bulkPlaceholder,
                     '1) http://127.0.0.1:8227',
                     '2) my-node,http://127.0.0.1:8227',
                     '3) my-node,http://127.0.0.1:8227,my-token',
@@ -3141,7 +3155,7 @@ function AddNodeModal({
                 />
               </div>
               <div className="smallNote">
-                将为每一行创建一个节点。若未填写名称，将自动使用 RPC URL 生成名称。
+                {t.bulkNote}
               </div>
             </>
           )}
@@ -3149,14 +3163,14 @@ function AddNodeModal({
         </div>
         <div className="modalActions">
           <button className="btn btnGhost" onClick={onClose}>
-            取消
+            {t.cancel}
           </button>
           <div className="spacer" />
           <button
             className="btn"
             onClick={mode === 'single' ? submitSingle : submitBulk}
           >
-            {mode === 'single' ? '添加并开始监控' : '批量添加节点'}
+            {mode === 'single' ? t.addAndMonitor : t.bulkAddNodes}
           </button>
         </div>
       </div>
@@ -3213,12 +3227,13 @@ function CommitmentTraceView({
   onFetchTrace: () => void
   onManualParse: () => void
 }) {
+  const t = useT()
   return (
     <div className="layout">
       <section className="card">
         <div className="cardHeader">
           <div className="cardTitle">Transaction Trace</div>
-          <div className="muted">通过 CKB 链上数据追踪 Commitment Lock 交易</div>
+          <div className="muted">{t.traceSubtitle}</div>
         </div>
         <div className="cardBody">
           <div style={{ display: 'grid', gap: 12 }}>
@@ -3260,7 +3275,7 @@ function CommitmentTraceView({
                   />
                 </div>
                 <div className="field">
-                  <div className="label">Commitment Lock Code Hash (可选，留空则仅获取交易不做 trace)</div>
+                  <div className="label">{t.codeHashLabel}</div>
                   <input
                     className="input"
                     value={customCodeHash}
@@ -3277,7 +3292,7 @@ function CommitmentTraceView({
                   className="input"
                   value={txHash}
                   onChange={(e) => onTxHashChange(e.target.value)}
-                  placeholder="输入交易哈希 (0x...)"
+                  placeholder={t.txHashPlaceholder}
                   style={{ flex: 1 }}
                 />
                 <button
@@ -3285,7 +3300,7 @@ function CommitmentTraceView({
                   onClick={onFetchTrace}
                   disabled={traceState === 'pending' || !txHash.trim()}
                 >
-                  {traceState === 'pending' ? `追踪中 (${traceStepCount})…` : 'Fetch & Trace'}
+                  {traceState === 'pending' ? t.tracing(traceStepCount) : 'Fetch & Trace'}
                 </button>
               </div>
             </div>
@@ -3308,7 +3323,7 @@ function CommitmentTraceView({
           <div className="cardHeader">
             <div className="cardTitle">Transaction Trace ({traceItems.length} transactions)</div>
             {traceState === 'pending' ? (
-              <div className="muted">追踪中… 已发现 {traceStepCount} 笔交易</div>
+              <div className="muted">{t.tracingProgress(traceStepCount)}</div>
             ) : null}
           </div>
           <div className="cardBody" style={{ display: 'grid', gap: 16 }}>
@@ -3328,7 +3343,7 @@ function CommitmentTraceView({
       <section className="card">
         <div className="cardHeader">
           <div className="cardTitle">Manual Parsing</div>
-          <div className="muted">手动输入 Lock Script Args 和 Witness 进行解析</div>
+          <div className="muted">{t.manualParseSubtitle}</div>
         </div>
         <div className="cardBody">
           <div style={{ display: 'grid', gap: 12 }}>
@@ -3358,7 +3373,7 @@ function CommitmentTraceView({
                 rows={3}
                 value={manualLockArgs}
                 onChange={(e) => onManualLockArgsChange(e.target.value)}
-                placeholder="输入 Lock Script Args (hex)…"
+                placeholder={t.lockArgsPlaceholder}
                 style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}
               />
             </div>
@@ -3369,7 +3384,7 @@ function CommitmentTraceView({
                 rows={6}
                 value={manualWitness}
                 onChange={(e) => onManualWitnessChange(e.target.value)}
-                placeholder="输入 Witness 数据 (hex)…"
+                placeholder={t.witnessPlaceholder}
                 style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}
               />
             </div>
