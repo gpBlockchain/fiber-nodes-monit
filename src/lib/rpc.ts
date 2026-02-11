@@ -31,7 +31,7 @@ export async function callFiberRpc<T>(
   try {
     json = JSON.parse(text) as unknown
   } catch {
-    throw new Error(`RPC响应不是JSON (HTTP ${res.status})`)
+    throw new Error(`RPC response is not JSON (HTTP ${res.status})`)
   }
 
   const envelope = json as JsonRpcEnvelope<T>
@@ -39,7 +39,7 @@ export async function callFiberRpc<T>(
     throw new Error(envelope.error?.message ?? 'RPC error')
   }
   if (!('result' in envelope)) {
-    throw new Error('RPC响应缺少result')
+    throw new Error('RPC response missing result')
   }
   return envelope.result
 }
