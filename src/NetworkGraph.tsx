@@ -461,6 +461,8 @@ export function NetworkGraph({
         ref={canvasRef}
         width={size.w}
         height={size.h}
+        role="img"
+        aria-label={`Network graph with ${graphNodes.length} nodes. Click to select, drag to move, shift-drag to link nodes.`}
         style={{ width: size.w, height: size.h, cursor: drag.kind === 'linking' ? 'crosshair' : hoveredNode != null ? 'grab' : 'default' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -530,7 +532,7 @@ export function NetworkGraph({
             ) : null}
             {arePeers && !hasChannel && toGd.nodeId ? (
               <button className="graphMenuItem" onClick={() => {
-                onOpenChannel(fromGd.node, toGd.node, toGd.nodeId!)
+                if (toGd.nodeId) onOpenChannel(fromGd.node, toGd.node, toGd.nodeId)
                 setLinkMenu(null)
               }}>
                 📡 Open Channel
@@ -538,7 +540,7 @@ export function NetworkGraph({
             ) : null}
             {hasChannel && toGd.nodeId ? (
               <button className="graphMenuItem" onClick={() => {
-                onSendPayment(fromGd.node, toGd.node, toGd.nodeId!)
+                if (toGd.nodeId) onSendPayment(fromGd.node, toGd.node, toGd.nodeId)
                 setLinkMenu(null)
               }}>
                 💸 Send Payment
