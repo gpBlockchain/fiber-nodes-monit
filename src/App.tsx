@@ -26,6 +26,10 @@ function getArray(obj: JsonObj, key: string): unknown[] | null {
  * 支持 send_payment（invoice / keysend）、new_invoice、parse_invoice、
  * get_payment、open_channel、shutdown_channel 等常用方法，用户可在模板上修改后再调用。
  */
+const SECP256K1_LOCK_CODE_HASH = '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8'
+const SECP256K1_LOCK_HASH_TYPE = 'type'
+const DEFAULT_SHUTDOWN_FEE_RATE = '0x3FC'
+
 const RPC_QUICK_PRESETS: { method: string; label: string; params: string }[] = [
   { method: 'send_payment', label: 'send_payment', params: JSON.stringify({ invoice: '' }, null, 2) },
   { method: 'send_payment', label: 'send_payment (keysend)', params: JSON.stringify({ target_pubkey: '', amount: '0x5f5e100', keysend: true }, null, 2) },
@@ -33,7 +37,7 @@ const RPC_QUICK_PRESETS: { method: string; label: string; params: string }[] = [
   { method: 'parse_invoice', label: 'parse_invoice', params: JSON.stringify({ invoice: '' }, null, 2) },
   { method: 'get_payment', label: 'get_payment', params: JSON.stringify({ payment_hash: '0x' }, null, 2) },
   { method: 'open_channel', label: 'open_channel', params: JSON.stringify({ peer_id: '', funding_amount: '0x2540be400', public: true }, null, 2) },
-  { method: 'shutdown_channel', label: 'shutdown_channel', params: JSON.stringify({ channel_id: '0x', close_script: { code_hash: '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8', hash_type: 'type', args: '' }, fee_rate: '0x3FC' }, null, 2) },
+  { method: 'shutdown_channel', label: 'shutdown_channel', params: JSON.stringify({ channel_id: '0x', close_script: { code_hash: SECP256K1_LOCK_CODE_HASH, hash_type: SECP256K1_LOCK_HASH_TYPE, args: '' }, fee_rate: DEFAULT_SHUTDOWN_FEE_RATE }, null, 2) },
 ]
 
 function formatAmountWithHex(value: unknown): string {
@@ -397,7 +401,7 @@ function App() {
 
   const [ctrlShutdownChannelId, setCtrlShutdownChannelId] = useState('')
   const [ctrlShutdownForce, setCtrlShutdownForce] = useState(false)
-  const [ctrlShutdownFeeRate, setCtrlShutdownFeeRate] = useState('0x3FC')
+  const [ctrlShutdownFeeRate, setCtrlShutdownFeeRate] = useState(DEFAULT_SHUTDOWN_FEE_RATE)
   const [ctrlShutdownCloseArgs, setCtrlShutdownCloseArgs] = useState('')
   const [ctrlShutdownState, setCtrlShutdownState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
   const [ctrlShutdownResult, setCtrlShutdownResult] = useState('')
@@ -1076,12 +1080,12 @@ function App() {
     try {
       const params: Record<string, unknown> = { channel_id: chId, force: ctrlShutdownForce }
       if (!ctrlShutdownForce) {
-        params.fee_rate = ctrlShutdownFeeRate.trim() || '0x3FC'
+        params.fee_rate = ctrlShutdownFeeRate.trim() || DEFAULT_SHUTDOWN_FEE_RATE
         const args = ctrlShutdownCloseArgs.trim()
         if (args) {
           params.close_script = {
-            code_hash: '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8',
-            hash_type: 'type',
+            code_hash: SECP256K1_LOCK_CODE_HASH,
+            hash_type: SECP256K1_LOCK_HASH_TYPE,
             args,
           }
         }
