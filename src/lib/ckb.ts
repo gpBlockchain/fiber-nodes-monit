@@ -1,9 +1,11 @@
-type CkbNetwork = 'testnet' | 'mainnet'
+export type CkbNetwork = 'testnet' | 'mainnet' | 'custom'
 
 export const SHANNON_PER_CKB = 100_000_000
 const MIN_LOCK_ARGS_HEX_LEN = 72
 
-const NETWORK_CONFIG: Record<CkbNetwork, { rpcUrl: string; commitmentCodeHash: string }> = {
+export type CkbNetworkConfig = { rpcUrl: string; commitmentCodeHash: string }
+
+const NETWORK_CONFIG: Record<'testnet' | 'mainnet', CkbNetworkConfig> = {
   testnet: {
     rpcUrl: 'https://testnet.ckb.dev/',
     commitmentCodeHash: '0x740dee83f87c6f309824d8fd3fbdd3c8380ee6fc9acc90b1a748438afcdf81d8',
@@ -14,7 +16,21 @@ const NETWORK_CONFIG: Record<CkbNetwork, { rpcUrl: string; commitmentCodeHash: s
   },
 }
 
-export function getNetworkConfig(network: CkbNetwork) {
+export function getNetworkConfig(network: 'testnet' | 'mainnet') {
+  return NETWORK_CONFIG[network]
+}
+
+export function resolveNetworkConfig(
+  network: CkbNetwork,
+  customRpcUrl?: string,
+  customCodeHash?: string,
+): CkbNetworkConfig {
+  if (network === 'custom') {
+    return {
+      rpcUrl: customRpcUrl || '',
+      commitmentCodeHash: customCodeHash || '',
+    }
+  }
   return NETWORK_CONFIG[network]
 }
 

@@ -4,7 +4,7 @@ import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from '
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
 import {
-  getNetworkConfig,
+  resolveNetworkConfig,
   getLnTxTrace,
   fetchAndParseTx,
   parseLockArgs,
@@ -12,6 +12,7 @@ import {
   parseWitness,
   parseWitnessV2,
   SHANNON_PER_CKB,
+  type CkbNetwork,
   type TraceItem,
   type ParsedLockArgs,
   type ParsedWitness,
@@ -381,7 +382,9 @@ function App() {
   const [rpcParams, setRpcParams] = useState('{}')
   const [rpcState, setRpcState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
   const [rpcResponse, setRpcResponse] = useState('')
-  const [ctNetwork, setCtNetwork] = useState<'testnet' | 'mainnet'>('testnet')
+  const [ctNetwork, setCtNetwork] = useState<CkbNetwork>('testnet')
+  const [ctCustomRpcUrl, setCtCustomRpcUrl] = useState('')
+  const [ctCustomCodeHash, setCtCustomCodeHash] = useState('')
   const [ctTxHash, setCtTxHash] = useState('')
   const [ctTraceState, setCtTraceState] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
   const [ctTraceError, setCtTraceError] = useState('')
@@ -2229,6 +2232,10 @@ function App() {
           <CommitmentTraceView
             network={ctNetwork}
             onNetworkChange={setCtNetwork}
+            customRpcUrl={ctCustomRpcUrl}
+            onCustomRpcUrlChange={setCtCustomRpcUrl}
+            customCodeHash={ctCustomCodeHash}
+            onCustomCodeHashChange={setCtCustomCodeHash}
             txHash={ctTxHash}
             onTxHashChange={setCtTxHash}
             traceState={ctTraceState}
@@ -2256,11 +2263,12 @@ function App() {
             onFetchTrace={async () => {
               const hash = ctTxHash.trim()
               if (!hash) return
+              const cfg = resolveNetworkConfig(ctNetwork, ctCustomRpcUrl.trim(), ctCustomCodeHash.trim())
+              if (!cfg.rpcUrl) return
               setCtTraceState('pending')
               setCtTraceError('')
               setCtTraceItems([])
               setCtTraceStepCount(0)
-              const cfg = getNetworkConfig(ctNetwork)
               try {
                 const { lockArgs, witness, version } = await fetchAndParseTx(cfg.rpcUrl, hash)
                 setCtManualLockArgs(lockArgs)
@@ -2520,7 +2528,10 @@ function formatCkb(shannon: string): string {
 }
 
 function CommitmentTraceView({
-  network, onNetworkChange, txHash, onTxHashChange,
+  network, onNetworkChange,
+  customRpcUrl, onCustomRpcUrlChange,
+  customCodeHash, onCustomCodeHashChange,
+  txHash, onTxHashChange,
   traceState, traceError, traceItems, traceStepCount,
   manualVersion, onManualVersionChange,
   manualLockArgs, onManualLockArgsChange,
@@ -2529,8 +2540,12 @@ function CommitmentTraceView({
   expandedWitness, onToggleWitness,
   onFetchTrace, onManualParse,
 }: {
-  network: 'testnet' | 'mainnet'
-  onNetworkChange: (n: 'testnet' | 'mainnet') => void
+  network: CkbNetwork
+  onNetworkChange: (n: CkbNetwork) => void
+  customRpcUrl: string
+  onCustomRpcUrlChange: (v: string) => void
+  customCodeHash: string
+  onCustomCodeHashChange: (v: string) => void
   txHash: string
   onTxHashChange: (v: string) => void
   traceState: 'idle' | 'pending' | 'done' | 'error'
@@ -2577,8 +2592,37 @@ function CommitmentTraceView({
                 >
                   Mainnet
                 </button>
+                <button
+                  className={network === 'custom' ? 'btn' : 'btn btnGhost'}
+                  style={{ fontSize: 12, padding: '6px 14px' }}
+                  onClick={() => onNetworkChange('custom')}
+                >
+                  Custom
+                </button>
               </div>
             </div>
+            {network === 'custom' ? (
+              <>
+                <div className="field">
+                  <div className="label">CKB RPC URL</div>
+                  <input
+                    className="input"
+                    value={customRpcUrl}
+                    onChange={(e) => onCustomRpcUrlChange(e.target.value)}
+                    placeholder="http://127.0.0.1:8114/"
+                  />
+                </div>
+                <div className="field">
+                  <div className="label">Commitment Lock Code Hash (可选，留空则仅获取交易不做 trace)</div>
+                  <input
+                    className="input"
+                    value={customCodeHash}
+                    onChange={(e) => onCustomCodeHashChange(e.target.value)}
+                    placeholder="0x..."
+                  />
+                </div>
+              </>
+            ) : null}
             <div className="field">
               <div className="label">Transaction Hash (hex)</div>
               <div style={{ display: 'flex', gap: 8 }}>
