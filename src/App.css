@@ -726,3 +726,42 @@
   border-left: 3px solid rgba(255, 77, 109, 0.4);
   color: rgba(255, 179, 196, 0.95);
 }
+
+.ncKvGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.ncKvRow {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.ncKvLabel {
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ncKvValue {
+  color: var(--ink);
+  word-break: break-all;
+}
+
+.ncKvMono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.ncRouteItem {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(6, 8, 14, 0.3);
+  display: grid;
+  gap: 4px;
+}
