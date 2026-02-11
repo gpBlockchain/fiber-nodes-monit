@@ -3,6 +3,20 @@ import './App.css'
 import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from './lib/format'
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
+import {
+  resolveNetworkConfig,
+  getLnTxTrace,
+  fetchAndParseTx,
+  parseLockArgs,
+  parseLockArgsV2,
+  parseWitness,
+  parseWitnessV2,
+  SHANNON_PER_CKB,
+  type CkbNetwork,
+  type TraceItem,
+  type ParsedLockArgs,
+  type ParsedWitness,
+} from './lib/ckb'
 
 type JsonObj = Record<string, unknown>
 
@@ -335,7 +349,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -368,6 +382,21 @@ function App() {
   const [rpcParams, setRpcParams] = useState('{}')
   const [rpcState, setRpcState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
   const [rpcResponse, setRpcResponse] = useState('')
+  const [ctNetwork, setCtNetwork] = useState<CkbNetwork>('testnet')
+  const [ctCustomRpcUrl, setCtCustomRpcUrl] = useState('')
+  const [ctCustomCodeHash, setCtCustomCodeHash] = useState('')
+  const [ctTxHash, setCtTxHash] = useState('')
+  const [ctTraceState, setCtTraceState] = useState<'idle' | 'pending' | 'done' | 'error'>('idle')
+  const [ctTraceError, setCtTraceError] = useState('')
+  const [ctTraceItems, setCtTraceItems] = useState<TraceItem[]>([])
+  const [ctTraceStepCount, setCtTraceStepCount] = useState(0)
+  const [ctManualVersion, setCtManualVersion] = useState<'1' | '2'>('2')
+  const [ctManualLockArgs, setCtManualLockArgs] = useState('')
+  const [ctManualWitness, setCtManualWitness] = useState('')
+  const [ctParsedLockArgs, setCtParsedLockArgs] = useState<ParsedLockArgs | null>(null)
+  const [ctParsedWitness, setCtParsedWitness] = useState<ParsedWitness | null>(null)
+  const [ctParseError, setCtParseError] = useState('')
+  const [ctExpandedWitness, setCtExpandedWitness] = useState<Set<number>>(new Set())
   const GRAPH_NODES_PAGE_SIZE = 20
   const [graphNodesPages, setGraphNodesPages] = useState<Array<{ nodes: JsonObj[]; last_cursor?: unknown }>>([])
   const [graphNodesCurrentPageIndex, setGraphNodesCurrentPageIndex] = useState(0)
@@ -1082,6 +1111,12 @@ function App() {
                 onClick={() => setViewMode('rpcDebug')}
               >
                 RPC 调试
+              </button>
+              <button
+                className={viewMode === 'commitmentTrace' ? 'btn' : 'btn btnGhost'}
+                onClick={() => setViewMode('commitmentTrace')}
+              >
+                Commitment Lock
               </button>
             </div>
             {viewMode === 'dashboard' ? (
@@ -2193,6 +2228,89 @@ function App() {
           </div>
         ) : null}
 
+        {viewMode === 'commitmentTrace' ? (
+          <CommitmentTraceView
+            network={ctNetwork}
+            onNetworkChange={setCtNetwork}
+            customRpcUrl={ctCustomRpcUrl}
+            onCustomRpcUrlChange={setCtCustomRpcUrl}
+            customCodeHash={ctCustomCodeHash}
+            onCustomCodeHashChange={setCtCustomCodeHash}
+            txHash={ctTxHash}
+            onTxHashChange={setCtTxHash}
+            traceState={ctTraceState}
+            traceError={ctTraceError}
+            traceItems={ctTraceItems}
+            traceStepCount={ctTraceStepCount}
+            manualVersion={ctManualVersion}
+            onManualVersionChange={setCtManualVersion}
+            manualLockArgs={ctManualLockArgs}
+            onManualLockArgsChange={setCtManualLockArgs}
+            manualWitness={ctManualWitness}
+            onManualWitnessChange={setCtManualWitness}
+            parsedLockArgs={ctParsedLockArgs}
+            parsedWitness={ctParsedWitness}
+            parseError={ctParseError}
+            expandedWitness={ctExpandedWitness}
+            onToggleWitness={(idx) => {
+              setCtExpandedWitness((prev) => {
+                const next = new Set(prev)
+                if (next.has(idx)) next.delete(idx)
+                else next.add(idx)
+                return next
+              })
+            }}
+            onFetchTrace={async () => {
+              const hash = ctTxHash.trim()
+              if (!hash) return
+              const cfg = resolveNetworkConfig(ctNetwork, ctCustomRpcUrl.trim(), ctCustomCodeHash.trim())
+              if (!cfg.rpcUrl) return
+              setCtTraceState('pending')
+              setCtTraceError('')
+              setCtTraceItems([])
+              setCtTraceStepCount(0)
+              try {
+                const { lockArgs, witness, version } = await fetchAndParseTx(cfg.rpcUrl, hash)
+                setCtManualLockArgs(lockArgs)
+                setCtManualWitness(witness)
+                setCtManualVersion(version === '1' ? '1' : '2')
+                try {
+                  const pla = version === '1' ? parseLockArgs(lockArgs) : parseLockArgsV2(lockArgs)
+                  const pw = version === '1' ? parseWitness(witness) : parseWitnessV2(witness)
+                  setCtParsedLockArgs(pla)
+                  setCtParsedWitness(pw)
+                  setCtParseError('')
+                } catch { /* manual parse can still work */ }
+                const trace = await getLnTxTrace(cfg.rpcUrl, cfg.commitmentCodeHash, hash, (n) => setCtTraceStepCount(n))
+                setCtTraceItems(trace)
+                setCtTraceState('done')
+              } catch (e) {
+                setCtTraceError(e instanceof Error ? e.message : String(e))
+                setCtTraceState('error')
+              }
+            }}
+            onManualParse={() => {
+              setCtParseError('')
+              setCtParsedLockArgs(null)
+              setCtParsedWitness(null)
+              const la = ctManualLockArgs.trim()
+              const w = ctManualWitness.trim()
+              if (!la || !w) {
+                setCtParseError('请提供 Lock Script Args 和 Witness 数据。')
+                return
+              }
+              try {
+                const pla = ctManualVersion === '1' ? parseLockArgs(la) : parseLockArgsV2(la)
+                const pw = ctManualVersion === '1' ? parseWitness(w) : parseWitnessV2(w)
+                setCtParsedLockArgs(pla)
+                setCtParsedWitness(pw)
+              } catch (e) {
+                setCtParseError(e instanceof Error ? e.message : String(e))
+              }
+            }}
+          />
+        ) : null}
+
         {modalOpen ? (
           <AddNodeModal
             onClose={() => setModalOpen(false)}
@@ -2397,6 +2515,496 @@ function AddNodeModal({
       </div>
     </div>
   )
+}
+
+function truncateHash(hash: string, left = 10, right = 10): string {
+  if (hash.length <= left + right + 3) return hash
+  return `${hash.substring(0, left)}…${hash.substring(hash.length - right)}`
+}
+
+function formatCkb(shannon: string): string {
+  const n = Number(BigInt(shannon))
+  return (n / SHANNON_PER_CKB).toFixed(8).replace(/\.?0+$/, '')
+}
+
+function CommitmentTraceView({
+  network, onNetworkChange,
+  customRpcUrl, onCustomRpcUrlChange,
+  customCodeHash, onCustomCodeHashChange,
+  txHash, onTxHashChange,
+  traceState, traceError, traceItems, traceStepCount,
+  manualVersion, onManualVersionChange,
+  manualLockArgs, onManualLockArgsChange,
+  manualWitness, onManualWitnessChange,
+  parsedLockArgs, parsedWitness, parseError,
+  expandedWitness, onToggleWitness,
+  onFetchTrace, onManualParse,
+}: {
+  network: CkbNetwork
+  onNetworkChange: (n: CkbNetwork) => void
+  customRpcUrl: string
+  onCustomRpcUrlChange: (v: string) => void
+  customCodeHash: string
+  onCustomCodeHashChange: (v: string) => void
+  txHash: string
+  onTxHashChange: (v: string) => void
+  traceState: 'idle' | 'pending' | 'done' | 'error'
+  traceError: string
+  traceItems: TraceItem[]
+  traceStepCount: number
+  manualVersion: '1' | '2'
+  onManualVersionChange: (v: '1' | '2') => void
+  manualLockArgs: string
+  onManualLockArgsChange: (v: string) => void
+  manualWitness: string
+  onManualWitnessChange: (v: string) => void
+  parsedLockArgs: ParsedLockArgs | null
+  parsedWitness: ParsedWitness | null
+  parseError: string
+  expandedWitness: Set<number>
+  onToggleWitness: (idx: number) => void
+  onFetchTrace: () => void
+  onManualParse: () => void
+}) {
+  return (
+    <div className="layout">
+      <section className="card">
+        <div className="cardHeader">
+          <div className="cardTitle">Transaction Trace</div>
+          <div className="muted">通过 CKB 链上数据追踪 Commitment Lock 交易</div>
+        </div>
+        <div className="cardBody">
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div className="field">
+              <div className="label">Network</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className={network === 'testnet' ? 'btn' : 'btn btnGhost'}
+                  style={{ fontSize: 12, padding: '6px 14px' }}
+                  onClick={() => onNetworkChange('testnet')}
+                >
+                  Testnet
+                </button>
+                <button
+                  className={network === 'mainnet' ? 'btn' : 'btn btnGhost'}
+                  style={{ fontSize: 12, padding: '6px 14px' }}
+                  onClick={() => onNetworkChange('mainnet')}
+                >
+                  Mainnet
+                </button>
+                <button
+                  className={network === 'custom' ? 'btn' : 'btn btnGhost'}
+                  style={{ fontSize: 12, padding: '6px 14px' }}
+                  onClick={() => onNetworkChange('custom')}
+                >
+                  Custom
+                </button>
+              </div>
+            </div>
+            {network === 'custom' ? (
+              <>
+                <div className="field">
+                  <div className="label">CKB RPC URL</div>
+                  <input
+                    className="input"
+                    value={customRpcUrl}
+                    onChange={(e) => onCustomRpcUrlChange(e.target.value)}
+                    placeholder="http://127.0.0.1:8114/"
+                  />
+                </div>
+                <div className="field">
+                  <div className="label">Commitment Lock Code Hash (可选，留空则仅获取交易不做 trace)</div>
+                  <input
+                    className="input"
+                    value={customCodeHash}
+                    onChange={(e) => onCustomCodeHashChange(e.target.value)}
+                    placeholder="0x..."
+                  />
+                </div>
+              </>
+            ) : null}
+            <div className="field">
+              <div className="label">Transaction Hash (hex)</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  className="input"
+                  value={txHash}
+                  onChange={(e) => onTxHashChange(e.target.value)}
+                  placeholder="输入交易哈希 (0x...)"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  className="btn"
+                  onClick={onFetchTrace}
+                  disabled={traceState === 'pending' || !txHash.trim()}
+                >
+                  {traceState === 'pending' ? `追踪中 (${traceStepCount})…` : 'Fetch & Trace'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {traceState === 'error' ? (
+        <section className="card">
+          <div className="cardBody">
+            <div className="pillBad" style={{ padding: '8px 12px', borderRadius: 8 }}>
+              Error: {traceError}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {traceItems.length > 0 ? (
+        <section className="card">
+          <div className="cardHeader">
+            <div className="cardTitle">Transaction Trace ({traceItems.length} transactions)</div>
+            {traceState === 'pending' ? (
+              <div className="muted">追踪中… 已发现 {traceStepCount} 笔交易</div>
+            ) : null}
+          </div>
+          <div className="cardBody" style={{ display: 'grid', gap: 16 }}>
+            {traceItems.map((item, index) => (
+              <TraceItemCard
+                key={item.tx_hash}
+                item={item}
+                index={index}
+                isWitnessExpanded={expandedWitness.has(index)}
+                onToggleWitness={() => onToggleWitness(index)}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="card">
+        <div className="cardHeader">
+          <div className="cardTitle">Manual Parsing</div>
+          <div className="muted">手动输入 Lock Script Args 和 Witness 进行解析</div>
+        </div>
+        <div className="cardBody">
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div className="field">
+              <div className="label">Version</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className={manualVersion === '1' ? 'btn' : 'btn btnGhost'}
+                  style={{ fontSize: 12, padding: '6px 14px' }}
+                  onClick={() => onManualVersionChange('1')}
+                >
+                  V1
+                </button>
+                <button
+                  className={manualVersion === '2' ? 'btn' : 'btn btnGhost'}
+                  style={{ fontSize: 12, padding: '6px 14px' }}
+                  onClick={() => onManualVersionChange('2')}
+                >
+                  V2
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <div className="label">Lock Script Args (hex)</div>
+              <textarea
+                className="input"
+                rows={3}
+                value={manualLockArgs}
+                onChange={(e) => onManualLockArgsChange(e.target.value)}
+                placeholder="输入 Lock Script Args (hex)…"
+                style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}
+              />
+            </div>
+            <div className="field">
+              <div className="label">Witness (hex)</div>
+              <textarea
+                className="input"
+                rows={6}
+                value={manualWitness}
+                onChange={(e) => onManualWitnessChange(e.target.value)}
+                placeholder="输入 Witness 数据 (hex)…"
+                style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={onManualParse}>
+                Parse
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {parseError ? (
+        <section className="card">
+          <div className="cardBody">
+            <div className="pillBad" style={{ padding: '8px 12px', borderRadius: 8 }}>
+              {parseError}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {parsedLockArgs || parsedWitness ? (
+        <section className="card">
+          <div className="cardHeader">
+            <div className="cardTitle">Parsed Data</div>
+          </div>
+          <div className="cardBody" style={{ display: 'grid', gap: 16 }}>
+            {parsedLockArgs ? (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(244,247,255,0.78)', marginBottom: 10, paddingBottom: 6, borderBottom: '2px solid var(--accent2)' }}>
+                  Lock Script Arguments
+                </div>
+                <ParsedDataTable data={parsedLockArgs} />
+              </div>
+            ) : null}
+            {parsedWitness ? (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(244,247,255,0.78)', marginBottom: 10, paddingBottom: 6, borderBottom: '2px solid var(--accent2)' }}>
+                  Witness Data
+                </div>
+                <ParsedDataTable data={parsedWitness} />
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
+function TraceItemCard({
+  item, index, isWitnessExpanded, onToggleWitness,
+}: {
+  item: TraceItem
+  index: number
+  isWitnessExpanded: boolean
+  onToggleWitness: () => void
+}) {
+  const { msg } = item
+  return (
+    <div className="ctTraceItem">
+      <div className="ctTraceHeader">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="ctTraceIndex">#{index + 1}</span>
+          <span
+            className="monoSmall ctHashCopy"
+            title={item.tx_hash}
+            onClick={() => void navigator.clipboard.writeText(item.tx_hash)}
+          >
+            {truncateHash(item.tx_hash, 12, 8)}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 11, color: 'var(--muted)' }}>
+          {msg.block_number !== 'Pending' ? <span>Block {msg.block_number}</span> : <span className="pill">Pending</span>}
+          {msg.block_timestamp ? <span>{msg.block_timestamp}</span> : null}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, padding: '8px 0' }}>
+        <span>
+          <strong style={{ color: 'var(--muted)' }}>Fee:</strong>{' '}
+          {formatCkb(msg.fee)} CKB
+        </span>
+        {msg.udt_fee !== '0' ? (
+          <span>
+            <strong style={{ color: 'var(--muted)' }}>UDT Fee:</strong> {msg.udt_fee}
+          </span>
+        ) : null}
+      </div>
+
+      {Object.keys(msg.balance_changes).length > 0 ? (
+        <div className="ctBalanceBox">
+          <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'rgba(244,247,255,0.72)', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid var(--line)' }}>
+            Net Balance Changes
+          </div>
+          {Object.entries(msg.balance_changes).map(([args, change]) => {
+            const ckbVal = BigInt(change.ckb)
+            const udtVal = BigInt(change.udt)
+            const ckbFormatted = formatCkb(change.ckb)
+            const isPositiveCkb = ckbVal > 0n
+            const isNegativeCkb = ckbVal < 0n
+            return (
+              <div key={args} className="ctBalanceRow">
+                <span className="monoSmall" title={args}>{truncateHash(args, 10, 10)}</span>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <span style={{ fontWeight: 500, color: isPositiveCkb ? 'var(--accent)' : isNegativeCkb ? 'var(--bad)' : 'var(--muted)' }}>
+                    CKB: {ckbVal > 0n ? '+' : ''}{ckbFormatted}
+                  </span>
+                  {udtVal !== 0n ? (
+                    <span style={{ fontWeight: 500, color: udtVal > 0n ? 'var(--accent)' : 'var(--bad)' }}>
+                      UDT: {udtVal > 0n ? '+' : ''}{udtVal.toString()}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+
+      <div className="ctCellsGrid">
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', color: 'rgba(244,247,255,0.72)', marginBottom: 6 }}>
+            Inputs ({msg.input_cells.length})
+          </div>
+          {msg.input_cells.map((c, i) => (
+            <div key={i} className="ctCellCard">
+              <div style={{ fontSize: 12 }}>
+                {(Number(c.capacity) / SHANNON_PER_CKB).toFixed(2)} CKB
+              </div>
+              {c.udt_capacity ? (
+                <div style={{ fontSize: 11, color: 'var(--accent)' }}>UDT: {c.udt_capacity.toString()}</div>
+              ) : null}
+              <div className="monoSmall dim" title={c.args} style={{ fontSize: 10 }}>
+                {truncateHash(c.args, 10, 10)}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 11, textTransform: 'uppercase', color: 'rgba(244,247,255,0.72)', marginBottom: 6 }}>
+            Outputs ({msg.output_cells.length})
+          </div>
+          {msg.output_cells.map((c, i) => (
+            <div key={i} className="ctCellCard">
+              <div style={{ fontSize: 12 }}>
+                {(Number(c.capacity) / SHANNON_PER_CKB).toFixed(2)} CKB
+              </div>
+              {c.udt_capacity ? (
+                <div style={{ fontSize: 11, color: 'var(--accent)' }}>UDT: {c.udt_capacity.toString()}</div>
+              ) : null}
+              <div className="monoSmall dim" title={c.args} style={{ fontSize: 10 }}>
+                {truncateHash(c.args, 10, 10)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {msg.parsed_witness ? (
+        <div style={{ marginTop: 10 }}>
+          <button
+            className="btn btnGhost"
+            style={{ fontSize: 11, padding: '5px 10px', width: '100%', justifyContent: 'space-between' }}
+            onClick={onToggleWitness}
+          >
+            <span>Decoded Witness Data</span>
+            <span style={{ transform: isWitnessExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 200ms' }}>▼</span>
+          </button>
+          {isWitnessExpanded ? (
+            <div style={{ marginTop: 8, padding: 10, border: '1px solid var(--line)', borderRadius: 12, background: 'rgba(6,8,14,0.4)' }}>
+              <ParsedDataTable data={msg.parsed_witness} />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ParsedDataTable({ data }: { data: Record<string, unknown> }) {
+  return (
+    <table className="table" style={{ fontSize: 11 }}>
+      <tbody>
+        {Object.entries(data).map(([key, value]) => (
+          <tr key={key}>
+            <td style={{ fontWeight: 600, whiteSpace: 'nowrap', width: '1%', color: 'rgba(244,247,255,0.72)' }}>
+              {key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
+            </td>
+            <td>
+              <ParsedDataValue value={value} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function ParsedDataValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return <span className="dim">—</span>
+
+  if (typeof value === 'string') {
+    if (value.startsWith('0x') && value.length > 24) {
+      return (
+        <span
+          className="monoSmall ctHashCopy"
+          title={value}
+          onClick={() => void navigator.clipboard.writeText(value)}
+        >
+          {truncateHash(value, 10, 10)}
+        </span>
+      )
+    }
+    return <span className="monoSmall">{value}</span>
+  }
+
+  if (typeof value === 'number' || typeof value === 'bigint') {
+    return <span className="monoSmall">{value.toString()}</span>
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="dim">Empty List</span>
+    const isArrayOfObjects = value.every((item) => typeof item === 'object' && item !== null && !Array.isArray(item))
+    if (isArrayOfObjects) {
+      const keys = Object.keys(value[0] as Record<string, unknown>)
+      return (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table" style={{ fontSize: 11 }}>
+            <thead>
+              <tr>
+                {keys.map((k) => (
+                  <th key={k} style={{ whiteSpace: 'nowrap' }}>
+                    {k.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {value.map((item, i) => {
+                const obj = item as Record<string, unknown>
+                return (
+                  <tr key={i}>
+                    {keys.map((k) => (
+                      <td key={k}>
+                        <ParsedDataValue value={obj[k]} />
+                      </td>
+                    ))}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+    return (
+      <div style={{ display: 'grid', gap: 8 }}>
+        {value.map((item, i) => (
+          <div key={i} style={{ padding: 8, border: '1px solid var(--line)', borderRadius: 10, background: 'rgba(6,8,14,0.3)' }}>
+            <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--accent2)', marginBottom: 4 }}>Item #{i + 1}</div>
+            {typeof item === 'object' && item !== null ? (
+              <ParsedDataTable data={item as Record<string, unknown>} />
+            ) : (
+              <ParsedDataValue value={item} />
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    if (obj.number !== undefined && obj.index !== undefined && obj.length !== undefined) {
+      return <span className="monoSmall">Number: {String(obj.number)}, Index: {String(obj.index)}, Length: {String(obj.length)}</span>
+    }
+    return <ParsedDataTable data={obj} />
+  }
+
+  return <span className="monoSmall">{String(value)}</span>
 }
 
 export default App
