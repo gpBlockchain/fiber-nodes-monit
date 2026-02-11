@@ -521,3 +521,247 @@
   border-radius: 10px;
   background: rgba(6, 8, 14, 0.3);
 }
+
+.ncTabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.ncTab {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 20, 0.5);
+  color: var(--muted);
+  border-radius: 12px;
+  padding: 8px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 180ms ease;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.ncTab:hover {
+  border-color: rgba(138, 125, 255, 0.35);
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.ncTabActive {
+  border-color: rgba(124, 255, 214, 0.5);
+  background: linear-gradient(135deg, rgba(124, 255, 214, 0.10), rgba(138, 125, 255, 0.08));
+  color: var(--ink);
+  box-shadow: 0 0 20px rgba(124, 255, 214, 0.08);
+}
+
+.ncTabIcon {
+  font-size: 16px;
+}
+
+.ncTabLabel {
+  font-weight: 500;
+}
+
+.ncFormArea {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(6, 8, 14, 0.35);
+  padding: 18px;
+  backdrop-filter: blur(6px);
+}
+
+.ncForm {
+  display: grid;
+  gap: 12px;
+}
+
+.ncFormTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.ncFormDesc {
+  color: var(--dim);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.ncFormRow {
+  display: flex;
+  gap: 12px;
+}
+
+.ncCheckLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ncCheckLabel input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+.ncHint {
+  color: var(--accent);
+  font-size: 11px;
+  margin-top: 2px;
+  min-height: 16px;
+}
+
+.ncToggleRow {
+  display: flex;
+  gap: 6px;
+}
+
+.ncToggleBtn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 20, 0.45);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.ncToggleBtn:hover {
+  border-color: rgba(138, 125, 255, 0.30);
+}
+
+.ncToggleBtnActive {
+  border-color: rgba(124, 255, 214, 0.45);
+  background: rgba(124, 255, 214, 0.08);
+  color: var(--ink);
+}
+
+.ncWarn {
+  font-size: 11px;
+  color: var(--warn);
+  background: rgba(255, 209, 102, 0.06);
+  border: 1px solid rgba(255, 209, 102, 0.20);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.ncExecBtn {
+  padding: 10px 24px;
+  font-weight: 600;
+  gap: 8px;
+  border-color: rgba(124, 255, 214, 0.35);
+  background: linear-gradient(135deg, rgba(124, 255, 214, 0.12), rgba(18, 24, 44, 0.68));
+}
+
+.ncExecBtn:hover {
+  border-color: rgba(124, 255, 214, 0.55);
+  box-shadow: 0 0 24px rgba(124, 255, 214, 0.12);
+}
+
+.ncSpinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(124, 255, 214, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ncSpin 0.7s linear infinite;
+}
+
+@keyframes ncSpin {
+  to { transform: rotate(360deg); }
+}
+
+.ncStatusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  animation: ncFadeIn 0.3s ease;
+}
+
+@keyframes ncFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ncStatusOk {
+  border: 1px solid rgba(124, 255, 214, 0.35);
+  background: rgba(124, 255, 214, 0.08);
+  color: rgba(174, 255, 235, 0.95);
+}
+
+.ncStatusBad {
+  border: 1px solid rgba(255, 77, 109, 0.35);
+  background: rgba(255, 77, 109, 0.08);
+  color: rgba(255, 179, 196, 0.95);
+}
+
+.ncResultPre {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.ncResultOk {
+  border-left: 3px solid rgba(124, 255, 214, 0.4);
+}
+
+.ncResultError {
+  border-left: 3px solid rgba(255, 77, 109, 0.4);
+  color: rgba(255, 179, 196, 0.95);
+}
+
+.ncKvGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.ncKvRow {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.ncKvLabel {
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ncKvValue {
+  color: var(--ink);
+  word-break: break-all;
+}
+
+.ncKvMono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.ncRouteItem {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(6, 8, 14, 0.3);
+  display: grid;
+  gap: 4px;
+}

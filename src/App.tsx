@@ -349,7 +349,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace' | 'nodeControl'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -382,6 +382,30 @@ function App() {
   const [rpcParams, setRpcParams] = useState('{}')
   const [rpcState, setRpcState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
   const [rpcResponse, setRpcResponse] = useState('')
+
+  const [ncActiveOp, setNcActiveOp] = useState<'connect_peer' | 'open_channel' | 'new_invoice' | 'send_payment' | 'shutdown_channel' | 'get_payment' | 'get_invoice'>('connect_peer')
+  const [ncState, setNcState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
+  const [ncResult, setNcResult] = useState('')
+  const [ncResultObj, setNcResultObj] = useState<unknown>(null)
+  const [ncResultOp, setNcResultOp] = useState('')
+  const [ncConnectAddr, setNcConnectAddr] = useState('')
+  const [ncConnectSave, setNcConnectSave] = useState(true)
+  const [ncOpenPeerId, setNcOpenPeerId] = useState('')
+  const [ncOpenAmount, setNcOpenAmount] = useState('0x2540be400')
+  const [ncOpenPublic, setNcOpenPublic] = useState(true)
+  const [ncInvoiceAmount, setNcInvoiceAmount] = useState('0x5f5e100')
+  const [ncInvoiceCurrency, setNcInvoiceCurrency] = useState('Fibt')
+  const [ncInvoiceDesc, setNcInvoiceDesc] = useState('')
+  const [ncInvoiceHashAlgo, setNcInvoiceHashAlgo] = useState('sha256')
+  const [ncPayInvoice, setNcPayInvoice] = useState('')
+  const [ncPayKeysend, setNcPayKeysend] = useState(false)
+  const [ncPayTarget, setNcPayTarget] = useState('')
+  const [ncPayAmount, setNcPayAmount] = useState('0x5f5e100')
+  const [ncShutdownChannelId, setNcShutdownChannelId] = useState('')
+  const [ncShutdownForce, setNcShutdownForce] = useState(false)
+  const [ncGetPaymentHash, setNcGetPaymentHash] = useState('')
+  const [ncGetInvoiceHash, setNcGetInvoiceHash] = useState('')
+
   const [ctNetwork, setCtNetwork] = useState<CkbNetwork>('testnet')
   const [ctCustomRpcUrl, setCtCustomRpcUrl] = useState('')
   const [ctCustomCodeHash, setCtCustomCodeHash] = useState('')
@@ -1023,6 +1047,66 @@ function App() {
     }
   }, [selectedNode, rpcMethod, rpcParams])
 
+  const runNodeControl = useCallback(async () => {
+    if (!selectedNode) return
+    setNcState('pending')
+    setNcResult('')
+    setNcResultObj(null)
+    setNcResultOp(ncActiveOp)
+    try {
+      let method = ''
+      let params: unknown = {}
+      switch (ncActiveOp) {
+        case 'connect_peer':
+          method = 'connect_peer'
+          params = { address: ncConnectAddr.trim(), save: ncConnectSave }
+          break
+        case 'open_channel':
+          method = 'open_channel'
+          params = { peer_id: ncOpenPeerId.trim(), funding_amount: ncOpenAmount.trim(), public: ncOpenPublic }
+          break
+        case 'new_invoice':
+          method = 'new_invoice'
+          params = {
+            amount: ncInvoiceAmount.trim(),
+            currency: ncInvoiceCurrency.trim() || 'Fibt',
+            description: ncInvoiceDesc.trim() || undefined,
+            hash_algorithm: ncInvoiceHashAlgo.trim() || 'sha256',
+          }
+          break
+        case 'send_payment':
+          if (ncPayKeysend) {
+            method = 'send_payment'
+            params = { target_pubkey: ncPayTarget.trim(), amount: ncPayAmount.trim(), keysend: true }
+          } else {
+            method = 'send_payment'
+            params = { invoice: ncPayInvoice.trim() }
+          }
+          break
+        case 'shutdown_channel':
+          method = 'shutdown_channel'
+          params = { channel_id: ncShutdownChannelId.trim(), force: ncShutdownForce }
+          break
+        case 'get_payment':
+          method = 'get_payment'
+          params = { payment_hash: ncGetPaymentHash.trim() }
+          break
+        case 'get_invoice':
+          method = 'get_invoice'
+          params = { payment_hash: ncGetInvoiceHash.trim() }
+          break
+      }
+      const result = await callFiberRpc<unknown>(selectedNode, method, params)
+      setNcState('success')
+      setNcResult(JSON.stringify(result, null, 2))
+      setNcResultObj(result)
+    } catch (err) {
+      setNcState('error')
+      setNcResult(err instanceof Error ? err.message : String(err))
+      setNcResultObj(null)
+    }
+  }, [selectedNode, ncActiveOp, ncConnectAddr, ncConnectSave, ncOpenPeerId, ncOpenAmount, ncOpenPublic, ncInvoiceAmount, ncInvoiceCurrency, ncInvoiceDesc, ncInvoiceHashAlgo, ncPayInvoice, ncPayKeysend, ncPayTarget, ncPayAmount, ncShutdownChannelId, ncShutdownForce, ncGetPaymentHash, ncGetInvoiceHash])
+
   return (
     <div className="appShell">
       <aside className="side">
@@ -1157,6 +1241,13 @@ function App() {
                 onClick={() => setViewMode('commitmentTrace')}
               >
                 Commitment Lock
+              </button>
+              <button
+                className={viewMode === 'nodeControl' ? 'btn' : 'btn btnGhost'}
+                onClick={() => setViewMode('nodeControl')}
+                style={viewMode === 'nodeControl' ? { borderColor: 'rgba(124,255,214,0.5)', background: 'linear-gradient(135deg, rgba(124,255,214,0.12), rgba(138,125,255,0.12))' } : undefined}
+              >
+                ⚡ Node Control
               </button>
             </div>
             {viewMode === 'dashboard' ? (
@@ -2351,6 +2442,346 @@ function App() {
           />
         ) : null}
 
+        {viewMode === 'nodeControl' ? (
+          <div className="layout">
+            <section className="card" style={{ overflow: 'visible' }}>
+              <div className="cardHeader" style={{ borderBottom: 'none', padding: '16px 18px 8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 20 }}>⚡</span>
+                  <div className="cardTitle" style={{ fontSize: 14 }}>Node Control Panel</div>
+                </div>
+                <div className="muted">
+                  {selectedNode ? selectedNode.name : '← 请先选择节点'}
+                </div>
+              </div>
+              <div className="cardBody" style={{ padding: '8px 18px 18px' }}>
+                {!selectedNode ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)' }}>
+                    <div style={{ fontSize: 40, marginBottom: 12 }}>🔌</div>
+                    <div>请在左侧面板选择一个节点以开始操控</div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="ncTabs">
+                      {([
+                        ['connect_peer', '🔗', 'Connect Peer'],
+                        ['open_channel', '📡', 'Open Channel'],
+                        ['new_invoice', '🧾', 'New Invoice'],
+                        ['send_payment', '💸', 'Send Payment'],
+                        ['get_payment', '🔍', 'Get Payment'],
+                        ['get_invoice', '📋', 'Get Invoice'],
+                        ['shutdown_channel', '🚪', 'Shutdown Channel'],
+                      ] as const).map(([op, icon, label]) => (
+                        <button
+                          key={op}
+                          className={`ncTab ${ncActiveOp === op ? 'ncTabActive' : ''}`}
+                          onClick={() => { setNcActiveOp(op); setNcState('idle'); setNcResult('') }}
+                        >
+                          <span className="ncTabIcon">{icon}</span>
+                          <span className="ncTabLabel">{label}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="ncFormArea">
+                      {ncActiveOp === 'connect_peer' && (
+                        <div className="ncForm">
+                          <div className="ncFormTitle">
+                            <span style={{ fontSize: 18 }}>🔗</span> Connect to Peer
+                          </div>
+                          <div className="ncFormDesc">连接到远程 Fiber 节点，需要提供 MultiAddr 格式地址</div>
+                          <div className="field">
+                            <div className="label">Peer Address (MultiAddr)</div>
+                            <input
+                              className="input"
+                              value={ncConnectAddr}
+                              onChange={(e) => setNcConnectAddr(e.target.value)}
+                              placeholder="/ip4/127.0.0.1/tcp/8228/p2p/QmNodePeerId..."
+                            />
+                          </div>
+                          <label className="ncCheckLabel">
+                            <input type="checkbox" checked={ncConnectSave} onChange={(e) => setNcConnectSave(e.target.checked)} />
+                            <span>保存到 peer store</span>
+                          </label>
+                        </div>
+                      )}
+
+                      {ncActiveOp === 'open_channel' && (
+                        <div className="ncForm">
+                          <div className="ncFormTitle">
+                            <span style={{ fontSize: 18 }}>📡</span> Open Channel
+                          </div>
+                          <div className="ncFormDesc">向已连接的 Peer 发起通道开设请求</div>
+                          <div className="field">
+                            <div className="label">Peer ID</div>
+                            <input
+                              className="input"
+                              value={ncOpenPeerId}
+                              onChange={(e) => setNcOpenPeerId(e.target.value)}
+                              placeholder="QmPeerId..."
+                            />
+                          </div>
+                          <div className="field">
+                            <div className="label">Funding Amount (hex)</div>
+                            <input
+                              className="input"
+                              value={ncOpenAmount}
+                              onChange={(e) => setNcOpenAmount(e.target.value)}
+                              placeholder="0x2540be400"
+                            />
+                            <div className="ncHint">
+                              {(() => { const n = hexToNumberMaybe(ncOpenAmount); return n != null ? `= ${n} shannons (${(n / 1e8).toFixed(4)} CKB)` : '' })()}
+                            </div>
+                          </div>
+                          <label className="ncCheckLabel">
+                            <input type="checkbox" checked={ncOpenPublic} onChange={(e) => setNcOpenPublic(e.target.checked)} />
+                            <span>Public channel（广播到网络，可用于转发 TLC）</span>
+                          </label>
+                        </div>
+                      )}
+
+                      {ncActiveOp === 'new_invoice' && (
+                        <div className="ncForm">
+                          <div className="ncFormTitle">
+                            <span style={{ fontSize: 18 }}>🧾</span> New Invoice
+                          </div>
+                          <div className="ncFormDesc">生成一张新的收款 Invoice</div>
+                          <div className="field">
+                            <div className="label">Amount (hex)</div>
+                            <input
+                              className="input"
+                              value={ncInvoiceAmount}
+                              onChange={(e) => setNcInvoiceAmount(e.target.value)}
+                              placeholder="0x5f5e100"
+                            />
+                            <div className="ncHint">
+                              {(() => { const n = hexToNumberMaybe(ncInvoiceAmount); return n != null ? `= ${n} shannons (${(n / 1e8).toFixed(4)} CKB)` : '' })()}
+                            </div>
+                          </div>
+                          <div className="ncFormRow">
+                            <div className="field" style={{ flex: 1 }}>
+                              <div className="label">Currency</div>
+                              <input
+                                className="input"
+                                value={ncInvoiceCurrency}
+                                onChange={(e) => setNcInvoiceCurrency(e.target.value)}
+                                placeholder="Fibt"
+                              />
+                            </div>
+                            <div className="field" style={{ flex: 1 }}>
+                              <div className="label">Hash Algorithm</div>
+                              <input
+                                className="input"
+                                value={ncInvoiceHashAlgo}
+                                onChange={(e) => setNcInvoiceHashAlgo(e.target.value)}
+                                placeholder="sha256"
+                              />
+                            </div>
+                          </div>
+                          <div className="field">
+                            <div className="label">Description (optional)</div>
+                            <input
+                              className="input"
+                              value={ncInvoiceDesc}
+                              onChange={(e) => setNcInvoiceDesc(e.target.value)}
+                              placeholder="Coffee payment ☕"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {ncActiveOp === 'send_payment' && (
+                        <div className="ncForm">
+                          <div className="ncFormTitle">
+                            <span style={{ fontSize: 18 }}>💸</span> Send Payment
+                          </div>
+                          <div className="ncFormDesc">通过 Invoice 或 Keysend 发送付款</div>
+                          <div className="ncToggleRow">
+                            <button
+                              className={`ncToggleBtn ${!ncPayKeysend ? 'ncToggleBtnActive' : ''}`}
+                              onClick={() => setNcPayKeysend(false)}
+                            >
+                              📄 Invoice
+                            </button>
+                            <button
+                              className={`ncToggleBtn ${ncPayKeysend ? 'ncToggleBtnActive' : ''}`}
+                              onClick={() => setNcPayKeysend(true)}
+                            >
+                              🔑 Keysend
+                            </button>
+                          </div>
+                          {!ncPayKeysend ? (
+                            <div className="field">
+                              <div className="label">Invoice</div>
+                              <textarea
+                                className="input"
+                                style={{ minHeight: 80, fontSize: 12 }}
+                                value={ncPayInvoice}
+                                onChange={(e) => setNcPayInvoice(e.target.value)}
+                                placeholder="fibt1..."
+                              />
+                            </div>
+                          ) : (
+                            <>
+                              <div className="field">
+                                <div className="label">Target Pubkey</div>
+                                <input
+                                  className="input"
+                                  value={ncPayTarget}
+                                  onChange={(e) => setNcPayTarget(e.target.value)}
+                                  placeholder="Target node public key"
+                                />
+                              </div>
+                              <div className="field">
+                                <div className="label">Amount (hex)</div>
+                                <input
+                                  className="input"
+                                  value={ncPayAmount}
+                                  onChange={(e) => setNcPayAmount(e.target.value)}
+                                  placeholder="0x5f5e100"
+                                />
+                                <div className="ncHint">
+                                  {(() => { const n = hexToNumberMaybe(ncPayAmount); return n != null ? `= ${n} shannons (${(n / 1e8).toFixed(4)} CKB)` : '' })()}
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {ncActiveOp === 'get_payment' && (
+                        <div className="ncForm">
+                          <div className="ncFormTitle">
+                            <span style={{ fontSize: 18 }}>🔍</span> Get Payment
+                          </div>
+                          <div className="ncFormDesc">通过 Payment Hash 查询付款状态和详情</div>
+                          <div className="field">
+                            <div className="label">Payment Hash</div>
+                            <input
+                              className="input"
+                              value={ncGetPaymentHash}
+                              onChange={(e) => setNcGetPaymentHash(e.target.value)}
+                              placeholder="0x..."
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {ncActiveOp === 'get_invoice' && (
+                        <div className="ncForm">
+                          <div className="ncFormTitle">
+                            <span style={{ fontSize: 18 }}>📋</span> Get Invoice
+                          </div>
+                          <div className="ncFormDesc">通过 Payment Hash 查询 Invoice 详情和状态</div>
+                          <div className="field">
+                            <div className="label">Payment Hash</div>
+                            <input
+                              className="input"
+                              value={ncGetInvoiceHash}
+                              onChange={(e) => setNcGetInvoiceHash(e.target.value)}
+                              placeholder="0x..."
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {ncActiveOp === 'shutdown_channel' && (
+                        <div className="ncForm">
+                          <div className="ncFormTitle">
+                            <span style={{ fontSize: 18 }}>🚪</span> Shutdown Channel
+                          </div>
+                          <div className="ncFormDesc">关闭一个已存在的通道</div>
+                          <div className="field">
+                            <div className="label">Channel ID</div>
+                            <input
+                              className="input"
+                              value={ncShutdownChannelId}
+                              onChange={(e) => setNcShutdownChannelId(e.target.value)}
+                              placeholder="0x..."
+                            />
+                          </div>
+                          <label className="ncCheckLabel">
+                            <input type="checkbox" checked={ncShutdownForce} onChange={(e) => setNcShutdownForce(e.target.checked)} />
+                            <span>⚠️ 强制关闭 (Force close)</span>
+                          </label>
+                          {ncShutdownForce && (
+                            <div className="ncWarn">强制关闭将使用默认参数，可能需要等待超时期满。</div>
+                          )}
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
+                        <button
+                          className="btn ncExecBtn"
+                          onClick={() => void runNodeControl()}
+                          disabled={ncState === 'pending'}
+                        >
+                          {ncState === 'pending' ? (
+                            <span className="ncSpinner" />
+                          ) : (
+                            <span style={{ fontSize: 16 }}>▶</span>
+                          )}
+                          {ncState === 'pending' ? '执行中…' : '执行'}
+                        </button>
+                        {ncState === 'success' && (
+                          <span className="ncStatusBadge ncStatusOk">✓ 成功</span>
+                        )}
+                        {ncState === 'error' && (
+                          <span className="ncStatusBadge ncStatusBad">✗ 失败</span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
+
+            {ncState !== 'idle' && (
+              <section className="card">
+                <div className="cardHeader">
+                  <div className="cardTitle">
+                    {ncState === 'success' ? '✅ 执行结果' : ncState === 'error' ? '❌ 错误信息' : '⏳ 响应'}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {ncState !== 'pending' && ncResult && (
+                      <button
+                        className="btn btnGhost"
+                        style={{ fontSize: 11, padding: '4px 10px' }}
+                        onClick={() => { void navigator.clipboard.writeText(ncResult) }}
+                      >
+                        📋 复制
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div
+                  className="cardBody"
+                  style={{
+                    padding: 0,
+                    maxHeight: 480,
+                    overflow: 'auto',
+                  }}
+                >
+                  {ncState === 'pending' ? (
+                    <div style={{ padding: '14px 16px' }} className="muted">请求中…</div>
+                  ) : ncState === 'error' ? (
+                    <pre
+                      className="ncResultPre ncResultError"
+                      style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, margin: 0, padding: '14px 16px' }}
+                    >
+                      {ncResult}
+                    </pre>
+                  ) : ncState === 'success' && ncResultObj != null ? (
+                    <NcFormattedResult op={ncResultOp} result={ncResultObj} rawJson={ncResult} />
+                  ) : (
+                    <div style={{ padding: '14px 16px' }} className="muted">(空响应)</div>
+                  )}
+                </div>
+              </section>
+            )}
+          </div>
+        ) : null}
+
         {modalOpen ? (
           <AddNodeModal
             onClose={() => setModalOpen(false)}
@@ -2365,6 +2796,182 @@ function App() {
           />
         ) : null}
       </main>
+    </div>
+  )
+}
+
+function NcResultKV({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="ncKvRow">
+      <div className="ncKvLabel">{label}</div>
+      <div className={mono ? 'ncKvValue ncKvMono' : 'ncKvValue'}>{value}</div>
+    </div>
+  )
+}
+
+function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknown; rawJson: string }) {
+  const [showRaw, setShowRaw] = useState(false)
+  const obj = asObj(result)
+
+  const formatStatus = (raw: unknown): string => typeof raw === 'string' ? raw : JSON.stringify(raw)
+  const statusPillClass = (s: string) =>
+    s === 'Success' || s === 'Paid' || s === 'Received' ? 'pillOk'
+      : s === 'Failed' || s === 'Cancelled' || s === 'Expired' ? 'pillBad'
+        : ''
+
+  const renderPaymentResult = () => {
+    const paymentHash = getString(obj, 'payment_hash')
+    const status = formatStatus(obj.status)
+    const createdAt = obj.created_at
+    const updatedAt = obj.last_updated_at
+    const fee = obj.fee
+    const failedError = getString(obj, 'failed_error')
+    const routers = getArray(obj, 'routers')
+
+    return (
+      <>
+        {paymentHash && <NcResultKV label="Payment Hash" value={paymentHash} mono />}
+        {status && (
+          <NcResultKV
+            label="状态"
+            value={<span className={`pill ${statusPillClass(status)}`}>{status}</span>}
+          />
+        )}
+        {createdAt && <NcResultKV label="创建时间" value={hexMillisToLocalTimeLabel(createdAt)} />}
+        {updatedAt && <NcResultKV label="最后更新" value={hexMillisToLocalTimeLabel(updatedAt)} />}
+        {fee != null && <NcResultKV label="手续费" value={formatAmountWithHex(fee)} />}
+        {failedError && <NcResultKV label="错误" value={<span style={{ color: 'var(--bad)' }}>{failedError}</span>} />}
+        {routers && routers.length > 0 && (
+          <NcResultKV
+            label={`路由 (${routers.length})`}
+            value={
+              <div style={{ display: 'grid', gap: 6 }}>
+                {routers.map((r, i) => {
+                  const route = asObj(r)
+                  const nodes = getArray(route, 'nodes') || getArray(route, 'hops')
+                  const amt = route.amount
+                  return (
+                    <div key={i} className="ncRouteItem">
+                      {amt != null && <span className="dim" style={{ fontSize: 11 }}>amount: {formatAmountWithHex(amt)}</span>}
+                      {nodes && nodes.length > 0 && (
+                        <div style={{ fontSize: 11, wordBreak: 'break-all' }}>
+                          {nodes.map((n, j) => {
+                            const hop = asObj(n)
+                            const pubkey = getString(hop, 'pubkey') || getString(hop, 'target')
+                            return (
+                              <span key={j}>
+                                {j > 0 && <span className="dim"> → </span>}
+                                <span title={pubkey || ''}>{pubkey ? shorten(pubkey, 8, 6) : JSON.stringify(n)}</span>
+                              </span>
+                            )
+                          })}
+                        </div>
+                      )}
+                      {!nodes && <span style={{ fontSize: 11 }}>{JSON.stringify(r)}</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            }
+          />
+        )}
+      </>
+    )
+  }
+
+  const renderInvoiceResult = () => {
+    const invoiceAddr = getString(obj, 'invoice_address')
+    const status = obj.status != null ? formatStatus(obj.status) : null
+    const invoice = asObj(obj.invoice)
+    const amount = invoice.amount
+    const desc = getString(invoice, 'description')
+    const payeeHash = getString(invoice, 'payment_hash')
+    const currency = getString(invoice, 'currency') || (invoice.data ? getString(asObj(invoice.data), 'currency') : null)
+
+    return (
+      <>
+        {invoiceAddr && (
+          <NcResultKV
+            label="Invoice Address"
+            value={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="ncKvMono" style={{ wordBreak: 'break-all', fontSize: 11 }}>{invoiceAddr}</span>
+                <button
+                  className="btn btnGhost"
+                  style={{ fontSize: 10, padding: '2px 8px', flexShrink: 0 }}
+                  onClick={() => { void navigator.clipboard.writeText(invoiceAddr) }}
+                >
+                  📋
+                </button>
+              </div>
+            }
+          />
+        )}
+        {status && (
+          <NcResultKV
+            label="状态"
+            value={<span className={`pill ${statusPillClass(status)}`}>{status}</span>}
+          />
+        )}
+        {payeeHash && <NcResultKV label="Payment Hash" value={payeeHash} mono />}
+        {amount != null && <NcResultKV label="金额" value={formatAmountWithHex(amount)} />}
+        {currency && <NcResultKV label="币种" value={currency} />}
+        {desc && <NcResultKV label="描述" value={desc} />}
+      </>
+    )
+  }
+
+  const renderOpenChannelResult = () => {
+    const tempId = getString(obj, 'temporary_channel_id')
+    return tempId ? <NcResultKV label="Temporary Channel ID" value={tempId} mono /> : null
+  }
+
+  const renderGenericSuccess = () => {
+    if (result == null) {
+      return <div style={{ padding: '4px 0', color: 'var(--accent)' }}>操作成功完成</div>
+    }
+    return null
+  }
+
+  let formatted: React.ReactNode = null
+  switch (op) {
+    case 'send_payment':
+    case 'get_payment':
+      formatted = renderPaymentResult()
+      break
+    case 'new_invoice':
+    case 'get_invoice':
+      formatted = renderInvoiceResult()
+      break
+    case 'open_channel':
+      formatted = renderOpenChannelResult()
+      break
+    case 'connect_peer':
+    case 'shutdown_channel':
+      formatted = renderGenericSuccess()
+      break
+  }
+
+  return (
+    <div style={{ padding: '14px 16px' }}>
+      {formatted && <div className="ncKvGrid">{formatted}</div>}
+      <div style={{ marginTop: formatted ? 12 : 0 }}>
+        <button
+          className="btn btnGhost"
+          style={{ fontSize: 11, padding: '4px 10px' }}
+          onClick={() => setShowRaw(!showRaw)}
+        >
+          {showRaw ? '▼ 收起原始数据' : '▶ 查看原始 JSON'}
+        </button>
+        {showRaw && (
+          <pre
+            className="ncResultPre ncResultOk"
+            style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, margin: '8px 0 0', padding: '10px 12px', borderRadius: 10, background: 'rgba(6,8,14,0.4)', border: '1px solid var(--line)' }}
+          >
+            {rawJson}
+          </pre>
+        )}
+      </div>
     </div>
   )
 }
