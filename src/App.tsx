@@ -1085,16 +1085,32 @@ function App() {
                 </div>
                 <div style={{ display: 'grid', gap: 8, justifyItems: 'end' }}>
                   <span className="badge">{safeUrlLabel(n.rpcUrl)}</span>
-                  <button
-                    className="btn btnGhost"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      removeNode(n.id)
-                    }}
-                    style={{ padding: '6px 10px', borderRadius: 12 }}
-                  >
-                    删除
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      className="btn btnGhost"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const u = new URL(window.location.origin + window.location.pathname)
+                        u.searchParams.set('rpcurl', n.rpcUrl)
+                        u.searchParams.set('name', n.name)
+                        if (n.token) u.searchParams.set('token', n.token)
+                        copyToClipboard(u.toString())
+                      }}
+                      style={{ padding: '6px 10px', borderRadius: 12 }}
+                    >
+                      复制
+                    </button>
+                    <button
+                      className="btn btnGhost"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeNode(n.id)
+                      }}
+                      style={{ padding: '6px 10px', borderRadius: 12 }}
+                    >
+                      删除
+                    </button>
+                  </div>
                 </div>
               </div>
             )
