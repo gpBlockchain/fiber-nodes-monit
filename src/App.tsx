@@ -1124,7 +1124,7 @@ function App() {
         <div className="brand">
           <div className="brandTitle">FIBER MONITOR</div>
           <div className="brandSubtitle">{t.brandSubtitle}</div>
-          <button className="btn btnGhost" onClick={toggleLang} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 10 }}>
+          <button className="btn btnGhost" onClick={toggleLang} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 10 }} aria-label={lang === 'zh' ? 'Switch to English' : '切换到中文'}>
             {lang === 'zh' ? 'EN' : '中文'}
           </button>
         </div>
