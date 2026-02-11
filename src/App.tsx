@@ -335,7 +335,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'nodeControl'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -376,6 +376,31 @@ function App() {
   const [graphChannelsPages, setGraphChannelsPages] = useState<Array<{ channels: JsonObj[]; last_cursor?: unknown }>>([])
   const [graphChannelsCurrentPageIndex, setGraphChannelsCurrentPageIndex] = useState(0)
   const [graphChannelsLoading, setGraphChannelsLoading] = useState(false)
+
+  const [ctrlConnectAddr, setCtrlConnectAddr] = useState('')
+  const [ctrlConnectSave, setCtrlConnectSave] = useState(false)
+  const [ctrlConnectState, setCtrlConnectState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
+  const [ctrlConnectResult, setCtrlConnectResult] = useState('')
+
+  const [ctrlOpenPeerId, setCtrlOpenPeerId] = useState('')
+  const [ctrlOpenAmount, setCtrlOpenAmount] = useState('')
+  const [ctrlOpenPublic, setCtrlOpenPublic] = useState(true)
+  const [ctrlOpenState, setCtrlOpenState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
+  const [ctrlOpenResult, setCtrlOpenResult] = useState('')
+
+  const [ctrlPayMode, setCtrlPayMode] = useState<'invoice' | 'keysend'>('invoice')
+  const [ctrlPayInvoice, setCtrlPayInvoice] = useState('')
+  const [ctrlPayTarget, setCtrlPayTarget] = useState('')
+  const [ctrlPayAmount, setCtrlPayAmount] = useState('')
+  const [ctrlPayState, setCtrlPayState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
+  const [ctrlPayResult, setCtrlPayResult] = useState('')
+
+  const [ctrlShutdownChannelId, setCtrlShutdownChannelId] = useState('')
+  const [ctrlShutdownForce, setCtrlShutdownForce] = useState(false)
+  const [ctrlShutdownFeeRate, setCtrlShutdownFeeRate] = useState('0x3FC')
+  const [ctrlShutdownCloseArgs, setCtrlShutdownCloseArgs] = useState('')
+  const [ctrlShutdownState, setCtrlShutdownState] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
+  const [ctrlShutdownResult, setCtrlShutdownResult] = useState('')
 
   const toggleChannel = (id: string) => {
     setExpandedChannels((prev) => {
@@ -970,6 +995,107 @@ function App() {
     }
   }, [selectedNode, rpcMethod, rpcParams])
 
+  const runConnectPeer = useCallback(async () => {
+    if (!selectedNode) return
+    const addr = ctrlConnectAddr.trim()
+    if (!addr) return
+    setCtrlConnectState('pending')
+    setCtrlConnectResult('')
+    try {
+      const params: Record<string, unknown> = { address: addr }
+      if (ctrlConnectSave) params.save = true
+      await callFiberRpc<unknown>(selectedNode, 'connect_peer', params)
+      setCtrlConnectState('success')
+      setCtrlConnectResult('连接成功')
+      void refreshDetails()
+    } catch (err) {
+      setCtrlConnectState('error')
+      setCtrlConnectResult(err instanceof Error ? err.message : String(err))
+    }
+  }, [selectedNode, ctrlConnectAddr, ctrlConnectSave, refreshDetails])
+
+  const runOpenChannel = useCallback(async () => {
+    if (!selectedNode) return
+    const peerId = ctrlOpenPeerId.trim()
+    if (!peerId) return
+    const amountRaw = ctrlOpenAmount.trim()
+    if (!amountRaw) return
+    setCtrlOpenState('pending')
+    setCtrlOpenResult('')
+    try {
+      const amount = amountRaw.startsWith('0x') ? amountRaw : `0x${BigInt(amountRaw).toString(16)}`
+      const result = await callFiberRpc<JsonObj>(selectedNode, 'open_channel', {
+        peer_id: peerId,
+        funding_amount: amount,
+        public: ctrlOpenPublic,
+      })
+      setCtrlOpenState('success')
+      const tempId = getString(asObj(result), 'temporary_channel_id') ?? formatJson(result)
+      setCtrlOpenResult(`通道已创建，临时 ID: ${tempId}`)
+      void refreshDetails()
+    } catch (err) {
+      setCtrlOpenState('error')
+      setCtrlOpenResult(err instanceof Error ? err.message : String(err))
+    }
+  }, [selectedNode, ctrlOpenPeerId, ctrlOpenAmount, ctrlOpenPublic, refreshDetails])
+
+  const runSendPayment = useCallback(async () => {
+    if (!selectedNode) return
+    setCtrlPayState('pending')
+    setCtrlPayResult('')
+    try {
+      let params: Record<string, unknown>
+      if (ctrlPayMode === 'invoice') {
+        const inv = ctrlPayInvoice.trim()
+        if (!inv) { setCtrlPayState('idle'); return }
+        params = { invoice: inv }
+      } else {
+        const target = ctrlPayTarget.trim()
+        const amountRaw = ctrlPayAmount.trim()
+        if (!target || !amountRaw) { setCtrlPayState('idle'); return }
+        const amount = amountRaw.startsWith('0x') ? amountRaw : `0x${BigInt(amountRaw).toString(16)}`
+        params = { target_pubkey: target, amount, keysend: true }
+      }
+      const result = await callFiberRpc<JsonObj>(selectedNode, 'send_payment', params)
+      setCtrlPayState('success')
+      const hash = getString(asObj(result), 'payment_hash') ?? ''
+      const status = getString(asObj(result), 'status') ?? ''
+      setCtrlPayResult(`payment_hash: ${hash}\nstatus: ${status}`)
+    } catch (err) {
+      setCtrlPayState('error')
+      setCtrlPayResult(err instanceof Error ? err.message : String(err))
+    }
+  }, [selectedNode, ctrlPayMode, ctrlPayInvoice, ctrlPayTarget, ctrlPayAmount])
+
+  const runShutdownChannel = useCallback(async () => {
+    if (!selectedNode) return
+    const chId = ctrlShutdownChannelId.trim()
+    if (!chId) return
+    setCtrlShutdownState('pending')
+    setCtrlShutdownResult('')
+    try {
+      const params: Record<string, unknown> = { channel_id: chId, force: ctrlShutdownForce }
+      if (!ctrlShutdownForce) {
+        params.fee_rate = ctrlShutdownFeeRate.trim() || '0x3FC'
+        const args = ctrlShutdownCloseArgs.trim()
+        if (args) {
+          params.close_script = {
+            code_hash: '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8',
+            hash_type: 'type',
+            args,
+          }
+        }
+      }
+      await callFiberRpc<unknown>(selectedNode, 'shutdown_channel', params)
+      setCtrlShutdownState('success')
+      setCtrlShutdownResult('通道关闭请求已发送')
+      void refreshDetails()
+    } catch (err) {
+      setCtrlShutdownState('error')
+      setCtrlShutdownResult(err instanceof Error ? err.message : String(err))
+    }
+  }, [selectedNode, ctrlShutdownChannelId, ctrlShutdownForce, ctrlShutdownFeeRate, ctrlShutdownCloseArgs, refreshDetails])
+
   return (
     <div className="appShell">
       <aside className="side">
@@ -1082,6 +1208,12 @@ function App() {
                 onClick={() => setViewMode('rpcDebug')}
               >
                 RPC 调试
+              </button>
+              <button
+                className={viewMode === 'nodeControl' ? 'btn' : 'btn btnGhost'}
+                onClick={() => setViewMode('nodeControl')}
+              >
+                Node Control
               </button>
             </div>
             {viewMode === 'dashboard' ? (
@@ -2187,6 +2319,280 @@ function App() {
                   >
                     {rpcResponse}
                   </pre>
+                )}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {viewMode === 'nodeControl' ? (
+          <div className="layout">
+            <section className="card">
+              <div className="cardHeader">
+                <div className="cardTitle">Node Control</div>
+                <div className="muted">
+                  {selectedNode ? selectedNode.name : '请选择左侧的节点'}
+                </div>
+              </div>
+              <div className="cardBody">
+                {!selectedNode ? (
+                  <div className="muted">需要先在左侧选择一个节点。</div>
+                ) : (
+                  <div className="ctrlGrid">
+                    <div className="card">
+                      <div className="cardHeader">
+                        <div className="cardTitle">Connect Peer</div>
+                      </div>
+                      <div className="cardBody">
+                        <div className="field">
+                          <div className="label">Peer Address (MultiAddr)</div>
+                          <input
+                            className="input"
+                            value={ctrlConnectAddr}
+                            onChange={(e) => setCtrlConnectAddr(e.target.value)}
+                            placeholder="/ip4/127.0.0.1/tcp/8228/p2p/QmNodeId..."
+                          />
+                        </div>
+                        <div className="field" style={{ marginTop: 8 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={ctrlConnectSave}
+                              onChange={(e) => setCtrlConnectSave(e.target.checked)}
+                            />
+                            <span className="label" style={{ margin: 0 }}>Save to peer store</span>
+                          </label>
+                        </div>
+                        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <button
+                            className="btn"
+                            onClick={() => void runConnectPeer()}
+                            disabled={ctrlConnectState === 'pending' || !ctrlConnectAddr.trim()}
+                          >
+                            {ctrlConnectState === 'pending' ? '连接中…' : 'Connect'}
+                          </button>
+                          {ctrlConnectState === 'success' ? <span className="pill pillOk">{ctrlConnectResult}</span> : null}
+                          {ctrlConnectState === 'error' ? <span className="pill pillBad" style={{ maxWidth: 400, wordBreak: 'break-all' }}>{ctrlConnectResult}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="card">
+                      <div className="cardHeader">
+                        <div className="cardTitle">Open Channel</div>
+                      </div>
+                      <div className="cardBody">
+                        <div className="field">
+                          <div className="label">Peer ID</div>
+                          <input
+                            className="input"
+                            value={ctrlOpenPeerId}
+                            onChange={(e) => setCtrlOpenPeerId(e.target.value)}
+                            placeholder="对端节点 Peer ID"
+                          />
+                          {details?.peers && details.peers.length > 0 ? (
+                            <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                              {details.peers.map((p, idx) => {
+                                const pid = getString(p, 'peer_id')
+                                if (!pid) return null
+                                return (
+                                  <button
+                                    key={idx}
+                                    className="btn btnGhost"
+                                    style={{ fontSize: 11, padding: '4px 8px', borderRadius: 10 }}
+                                    onClick={() => setCtrlOpenPeerId(pid)}
+                                    title={pid}
+                                  >
+                                    {shorten(pid, 10, 6)}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="field" style={{ marginTop: 8 }}>
+                          <div className="label">Funding Amount (shannons, 支持十进制或 0x 十六进制)</div>
+                          <input
+                            className="input"
+                            value={ctrlOpenAmount}
+                            onChange={(e) => setCtrlOpenAmount(e.target.value)}
+                            placeholder="例如: 10000000000 或 0x2540be400"
+                          />
+                        </div>
+                        <div className="field" style={{ marginTop: 8 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={ctrlOpenPublic}
+                              onChange={(e) => setCtrlOpenPublic(e.target.checked)}
+                            />
+                            <span className="label" style={{ margin: 0 }}>Public Channel</span>
+                          </label>
+                        </div>
+                        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <button
+                            className="btn"
+                            onClick={() => void runOpenChannel()}
+                            disabled={ctrlOpenState === 'pending' || !ctrlOpenPeerId.trim() || !ctrlOpenAmount.trim()}
+                          >
+                            {ctrlOpenState === 'pending' ? '开通中…' : 'Open Channel'}
+                          </button>
+                          {ctrlOpenState === 'success' ? <span className="pill pillOk" style={{ maxWidth: 400, wordBreak: 'break-all' }}>{ctrlOpenResult}</span> : null}
+                          {ctrlOpenState === 'error' ? <span className="pill pillBad" style={{ maxWidth: 400, wordBreak: 'break-all' }}>{ctrlOpenResult}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="card">
+                      <div className="cardHeader">
+                        <div className="cardTitle">Send Payment</div>
+                      </div>
+                      <div className="cardBody">
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                          <button
+                            className={ctrlPayMode === 'invoice' ? 'btn' : 'btn btnGhost'}
+                            onClick={() => setCtrlPayMode('invoice')}
+                            style={{ fontSize: 12, padding: '6px 10px' }}
+                          >
+                            Invoice
+                          </button>
+                          <button
+                            className={ctrlPayMode === 'keysend' ? 'btn' : 'btn btnGhost'}
+                            onClick={() => setCtrlPayMode('keysend')}
+                            style={{ fontSize: 12, padding: '6px 10px' }}
+                          >
+                            Keysend
+                          </button>
+                        </div>
+                        {ctrlPayMode === 'invoice' ? (
+                          <div className="field">
+                            <div className="label">Invoice</div>
+                            <input
+                              className="input"
+                              value={ctrlPayInvoice}
+                              onChange={(e) => setCtrlPayInvoice(e.target.value)}
+                              placeholder="粘贴 Fiber Invoice 字符串"
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            <div className="field">
+                              <div className="label">Target Pubkey</div>
+                              <input
+                                className="input"
+                                value={ctrlPayTarget}
+                                onChange={(e) => setCtrlPayTarget(e.target.value)}
+                                placeholder="对端节点公钥"
+                              />
+                            </div>
+                            <div className="field" style={{ marginTop: 8 }}>
+                              <div className="label">Amount (shannons, 支持十进制或 0x 十六进制)</div>
+                              <input
+                                className="input"
+                                value={ctrlPayAmount}
+                                onChange={(e) => setCtrlPayAmount(e.target.value)}
+                                placeholder="例如: 100000000 或 0x5f5e100"
+                              />
+                            </div>
+                          </>
+                        )}
+                        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <button
+                            className="btn"
+                            onClick={() => void runSendPayment()}
+                            disabled={ctrlPayState === 'pending'}
+                          >
+                            {ctrlPayState === 'pending' ? '发送中…' : 'Send Payment'}
+                          </button>
+                          {ctrlPayState === 'success' ? (
+                            <pre className="pill pillOk" style={{ maxWidth: 500, wordBreak: 'break-all', whiteSpace: 'pre-wrap', margin: 0 }}>{ctrlPayResult}</pre>
+                          ) : null}
+                          {ctrlPayState === 'error' ? <span className="pill pillBad" style={{ maxWidth: 500, wordBreak: 'break-all' }}>{ctrlPayResult}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="card">
+                      <div className="cardHeader">
+                        <div className="cardTitle">Shutdown Channel</div>
+                      </div>
+                      <div className="cardBody">
+                        <div className="field">
+                          <div className="label">Channel ID</div>
+                          <input
+                            className="input"
+                            value={ctrlShutdownChannelId}
+                            onChange={(e) => setCtrlShutdownChannelId(e.target.value)}
+                            placeholder="0x..."
+                          />
+                          {details?.channels && details.channels.length > 0 ? (
+                            <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                              {details.channels.map((ch, idx) => {
+                                const chId = getString(ch, 'channel_id')
+                                if (!chId) return null
+                                const st = formatJson(ch.state ?? '')
+                                return (
+                                  <button
+                                    key={idx}
+                                    className="btn btnGhost"
+                                    style={{ fontSize: 11, padding: '4px 8px', borderRadius: 10 }}
+                                    onClick={() => setCtrlShutdownChannelId(chId)}
+                                    title={`${chId} (${st})`}
+                                  >
+                                    {shorten(chId, 10, 6)} · {st}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="field" style={{ marginTop: 8 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={ctrlShutdownForce}
+                              onChange={(e) => setCtrlShutdownForce(e.target.checked)}
+                            />
+                            <span className="label" style={{ margin: 0 }}>Force Close</span>
+                          </label>
+                        </div>
+                        {!ctrlShutdownForce ? (
+                          <>
+                            <div className="field" style={{ marginTop: 8 }}>
+                              <div className="label">Fee Rate (hex, 默认 0x3FC)</div>
+                              <input
+                                className="input"
+                                value={ctrlShutdownFeeRate}
+                                onChange={(e) => setCtrlShutdownFeeRate(e.target.value)}
+                                placeholder="0x3FC"
+                              />
+                            </div>
+                            <div className="field" style={{ marginTop: 8 }}>
+                              <div className="label">Close Script Args (可选, secp256k1 lock args)</div>
+                              <input
+                                className="input"
+                                value={ctrlShutdownCloseArgs}
+                                onChange={(e) => setCtrlShutdownCloseArgs(e.target.value)}
+                                placeholder="0x..."
+                              />
+                            </div>
+                          </>
+                        ) : null}
+                        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <button
+                            className="btn"
+                            onClick={() => void runShutdownChannel()}
+                            disabled={ctrlShutdownState === 'pending' || !ctrlShutdownChannelId.trim()}
+                            style={ctrlShutdownForce ? { borderColor: 'rgba(255,77,109,0.5)', color: 'rgba(255,179,196,0.95)' } : undefined}
+                          >
+                            {ctrlShutdownState === 'pending' ? '关闭中…' : ctrlShutdownForce ? 'Force Shutdown' : 'Shutdown Channel'}
+                          </button>
+                          {ctrlShutdownState === 'success' ? <span className="pill pillOk">{ctrlShutdownResult}</span> : null}
+                          {ctrlShutdownState === 'error' ? <span className="pill pillBad" style={{ maxWidth: 400, wordBreak: 'break-all' }}>{ctrlShutdownResult}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
             </section>
