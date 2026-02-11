@@ -419,6 +419,30 @@ function App() {
     saveNodes(nodes)
   }, [nodes])
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const urls = params.getAll('rpcurl').map((u) => u.trim()).filter(isHttpUrl)
+    if (!urls.length) return
+    const name = params.get('name')?.trim() || ''
+    const token = params.get('token')?.trim() || ''
+    setNodes((prev) => {
+      const existingUrls = new Set(prev.map((n) => n.rpcUrl))
+      const toAdd = urls.filter((u) => !existingUrls.has(u))
+      if (!toAdd.length) return prev
+      const now = Date.now()
+      const newNodes: MonitoredNode[] = toAdd.map((u) => ({
+        id: globalThis.crypto?.randomUUID?.() ?? `${now}-${Math.random()}`,
+        name: toAdd.length === 1 && name ? name : safeUrlLabel(u),
+        rpcUrl: u,
+        token: token || undefined,
+        createdAt: now,
+      }))
+      setSelectedNodeId(newNodes[0]?.id ?? null)
+      return [...newNodes, ...prev]
+    })
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [])
+
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
