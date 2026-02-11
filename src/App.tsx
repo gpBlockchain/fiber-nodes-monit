@@ -2773,9 +2773,15 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
   const [showRaw, setShowRaw] = useState(false)
   const obj = asObj(result)
 
+  const formatStatus = (raw: unknown): string => typeof raw === 'string' ? raw : JSON.stringify(raw)
+  const statusPillClass = (s: string) =>
+    s === 'Success' || s === 'Paid' || s === 'Received' ? 'pillOk'
+      : s === 'Failed' || s === 'Cancelled' || s === 'Expired' ? 'pillBad'
+        : ''
+
   const renderPaymentResult = () => {
     const paymentHash = getString(obj, 'payment_hash')
-    const status = typeof obj.status === 'string' ? obj.status : JSON.stringify(obj.status)
+    const status = formatStatus(obj.status)
     const createdAt = obj.created_at
     const updatedAt = obj.last_updated_at
     const fee = obj.fee
@@ -2788,7 +2794,7 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
         {status && (
           <NcResultKV
             label="状态"
-            value={<span className={`pill ${status === 'Success' ? 'pillOk' : status === 'Failed' ? 'pillBad' : ''}`}>{status}</span>}
+            value={<span className={`pill ${statusPillClass(status)}`}>{status}</span>}
           />
         )}
         {createdAt && <NcResultKV label="创建时间" value={hexMillisToLocalTimeLabel(createdAt)} />}
@@ -2835,7 +2841,7 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
 
   const renderInvoiceResult = () => {
     const invoiceAddr = getString(obj, 'invoice_address')
-    const status = typeof obj.status === 'string' ? obj.status : obj.status != null ? JSON.stringify(obj.status) : null
+    const status = obj.status != null ? formatStatus(obj.status) : null
     const invoice = asObj(obj.invoice)
     const amount = invoice.amount
     const desc = getString(invoice, 'description')
@@ -2864,7 +2870,7 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
         {status && (
           <NcResultKV
             label="状态"
-            value={<span className={`pill ${status === 'Paid' || status === 'Received' ? 'pillOk' : status === 'Cancelled' || status === 'Expired' ? 'pillBad' : ''}`}>{status}</span>}
+            value={<span className={`pill ${statusPillClass(status)}`}>{status}</span>}
           />
         )}
         {payeeHash && <NcResultKV label="Payment Hash" value={payeeHash} mono />}
@@ -2881,7 +2887,7 @@ function NcFormattedResult({ op, result, rawJson }: { op: string; result: unknow
   }
 
   const renderGenericSuccess = () => {
-    if (result === null || result === undefined) {
+    if (result == null) {
       return <div style={{ padding: '4px 0', color: 'var(--accent)' }}>操作成功完成</div>
     }
     return null
