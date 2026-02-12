@@ -1680,7 +1680,7 @@ function App() {
                         )}
                         {accountBalance.cells.length > ACCOUNT_BALANCE_CELLS_LIMIT ? (
                           <div className="muted" style={{ padding: 8, fontSize: 11 }}>
-                            … {accountBalance.cells.length - ACCOUNT_BALANCE_CELLS_LIMIT} more cells hidden
+                            {t.moreCellsHidden(accountBalance.cells.length - ACCOUNT_BALANCE_CELLS_LIMIT)}
                           </div>
                         ) : null}
                       </div>

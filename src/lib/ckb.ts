@@ -2,6 +2,7 @@ export type CkbNetwork = 'testnet' | 'mainnet' | 'custom'
 
 export const SHANNON_PER_CKB = 100_000_000
 const MIN_LOCK_ARGS_HEX_LEN = 72
+const U128_HEX_LEN = 32
 
 export const CKB_CHAIN_HASHES: Record<string, 'testnet' | 'mainnet'> = {
   '0x10639e0895502b5688a6be8cf69460d76541bfa4821629d86d62ba0aae3f9606': 'testnet',
@@ -594,8 +595,8 @@ export function computeAccountBalance(
         const existing = udtMap.get(key)
         const dataHex = cell.data.startsWith('0x') ? cell.data.slice(2) : cell.data
         let amount = 0n
-        if (dataHex.length >= 32) {
-          amount = toIntFromBigUint128Le('0x' + dataHex.substring(0, 32))
+        if (dataHex.length >= U128_HEX_LEN) {
+          amount = toIntFromBigUint128Le('0x' + dataHex.substring(0, U128_HEX_LEN))
         }
         if (existing) {
           existing.balance += amount

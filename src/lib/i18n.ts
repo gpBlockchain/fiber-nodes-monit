@@ -176,6 +176,7 @@ const zh = {
   noCells: '暂无 Cell',
   customNetworkNoRpc: '自定义网络需要配置 CKB RPC URL',
   ckbRpcUrlPlaceholder: 'CKB RPC URL（例如 http://127.0.0.1:8114）',
+  moreCellsHidden: (count: number) => `… 还有 ${count} 个 Cell 未显示`,
 }
 
 const en: typeof zh = {
@@ -338,6 +339,7 @@ const en: typeof zh = {
   noCells: 'No cells',
   customNetworkNoRpc: 'Custom network requires CKB RPC URL configuration',
   ckbRpcUrlPlaceholder: 'CKB RPC URL (e.g. http://127.0.0.1:8114)',
+  moreCellsHidden: (count: number) => `… ${count} more cells hidden`,
 }
 
 export type Translations = typeof zh
