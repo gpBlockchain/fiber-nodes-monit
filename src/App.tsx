@@ -1626,6 +1626,24 @@ function App() {
                           ({accountBalance.ckbCellCount} cells)
                         </span>
                       </div>
+                      <div className="k">{t.ckbFreeBalance}</div>
+                      <div className="v">
+                        {formatCkbBalance(accountBalance.ckbFreeBalance)} CKB
+                        <span className="dim" style={{ marginLeft: 8, fontSize: 11 }}>
+                          ({accountBalance.ckbFreeCellCount} cells)
+                        </span>
+                      </div>
+                      {accountBalance.ckbInUdtCellCount > 0 ? (
+                        <>
+                          <div className="k">{t.ckbInUdtBalance}</div>
+                          <div className="v">
+                            {formatCkbBalance(accountBalance.ckbInUdtBalance)} CKB
+                            <span className="dim" style={{ marginLeft: 8, fontSize: 11 }}>
+                              ({accountBalance.ckbInUdtCellCount} cells)
+                            </span>
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                     {accountBalance.udtBalances.length > 0 ? (
                       <div className="kvGrid" style={{ flex: 1, minWidth: 200 }}>

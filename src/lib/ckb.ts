@@ -577,6 +577,10 @@ export type UdtBalance = {
 export type AccountBalance = {
   ckbBalance: bigint
   ckbCellCount: number
+  ckbFreeBalance: bigint
+  ckbFreeCellCount: number
+  ckbInUdtBalance: bigint
+  ckbInUdtCellCount: number
   udtBalances: UdtBalance[]
   cells: LiveCell[]
   network: CkbNetwork
@@ -593,6 +597,10 @@ export function computeAccountBalance(
 ): AccountBalance {
   let ckbBalance = 0n
   let ckbCellCount = 0
+  let ckbFreeBalance = 0n
+  let ckbFreeCellCount = 0
+  let ckbInUdtBalance = 0n
+  let ckbInUdtCellCount = 0
   const udtMap = new Map<string, UdtBalance>()
 
   const udtCfgMap = new Map<string, { name: string; script: { code_hash: string; hash_type: string; args: string } }>()
@@ -606,6 +614,8 @@ export function computeAccountBalance(
     if (cell.type) {
       const matchedUdt = udtCfgMap.get(buildScriptKey(cell.type))
       if (matchedUdt) {
+        ckbInUdtBalance += BigInt(cell.capacity)
+        ckbInUdtCellCount++
         const key = buildScriptKey(matchedUdt.script)
         const existing = udtMap.get(key)
         const dataHex = cell.data.startsWith('0x') ? cell.data.slice(2) : cell.data
@@ -624,13 +634,23 @@ export function computeAccountBalance(
             cellCount: 1,
           })
         }
+      } else {
+        ckbFreeBalance += BigInt(cell.capacity)
+        ckbFreeCellCount++
       }
+    } else {
+      ckbFreeBalance += BigInt(cell.capacity)
+      ckbFreeCellCount++
     }
   }
 
   return {
     ckbBalance,
     ckbCellCount,
+    ckbFreeBalance,
+    ckbFreeCellCount,
+    ckbInUdtBalance,
+    ckbInUdtCellCount,
     udtBalances: Array.from(udtMap.values()),
     cells,
     network,
