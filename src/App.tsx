@@ -15,8 +15,9 @@ import {
   SHANNON_PER_CKB,
   detectNetworkByChainHash,
   getCkbRpcUrlForChainHash,
-  getCells,
+  getAllCells,
   computeAccountBalance,
+  formatCkbBalance,
   type CkbNetwork,
   type TraceItem,
   type ParsedLockArgs,
@@ -560,7 +561,11 @@ function App() {
   const refreshAccountBalance = useCallback(async () => {
     if (!selectedNode || !details?.nodeInfo) return
     const chainHash = getString(details.nodeInfo, 'chain_hash')
-    if (!chainHash) return
+    if (!chainHash) {
+      setAccountBalanceState('error')
+      setAccountBalanceError('node_info missing chain_hash')
+      return
+    }
     const network = detectNetworkByChainHash(chainHash)
     const ckbRpcUrl = network === 'custom' ? accountBalanceCustomRpcUrl : getCkbRpcUrlForChainHash(chainHash)
     if (!ckbRpcUrl) {
@@ -569,7 +574,11 @@ function App() {
       return
     }
     const lockScript = details.nodeInfo['default_funding_lock_script']
-    if (!lockScript || typeof lockScript !== 'object') return
+    if (!lockScript || typeof lockScript !== 'object') {
+      setAccountBalanceState('error')
+      setAccountBalanceError('node_info missing default_funding_lock_script')
+      return
+    }
     const ls = lockScript as { code_hash: string; hash_type: string; args: string }
     const udtCfgInfosRaw = details.nodeInfo['udt_cfg_infos']
     const udtCfgInfos: { name: string; script: { code_hash: string; hash_type: string; args: string } }[] = []
@@ -577,16 +586,19 @@ function App() {
       for (const item of udtCfgInfosRaw) {
         const obj = item as Record<string, unknown>
         const name = typeof obj.name === 'string' ? obj.name : 'Unknown UDT'
-        const script = obj.script as { code_hash: string; hash_type: string; args: string } | undefined
-        if (script?.code_hash) {
-          udtCfgInfos.push({ name, script })
+        const scriptRaw = obj.script as unknown
+        if (scriptRaw && typeof scriptRaw === 'object') {
+          const { code_hash, hash_type, args } = scriptRaw as { code_hash?: unknown; hash_type?: unknown; args?: unknown }
+          if (typeof code_hash === 'string' && typeof hash_type === 'string' && typeof args === 'string') {
+            udtCfgInfos.push({ name, script: { code_hash, hash_type, args } })
+          }
         }
       }
     }
     setAccountBalanceState('loading')
     setAccountBalanceError('')
     try {
-      const { cells } = await getCells(ckbRpcUrl, ls)
+      const cells = await getAllCells(ckbRpcUrl, ls)
       const balance = computeAccountBalance(cells, udtCfgInfos, network)
       setAccountBalance(balance)
       setAccountBalanceState('ready')
@@ -1609,7 +1621,7 @@ function App() {
                       </div>
                       <div className="k">{t.ckbBalance}</div>
                       <div className="v" style={{ fontWeight: 600, fontSize: 14 }}>
-                        {(Number(accountBalance.ckbBalance) / SHANNON_PER_CKB).toLocaleString(undefined, { maximumFractionDigits: 8 })} CKB
+                        {formatCkbBalance(accountBalance.ckbBalance)} CKB
                         <span className="dim" style={{ marginLeft: 8, fontWeight: 400, fontSize: 11 }}>
                           ({accountBalance.ckbCellCount} cells)
                         </span>
@@ -1659,12 +1671,20 @@ function App() {
                             </thead>
                             <tbody>
                               {accountBalance.cells.slice(0, ACCOUNT_BALANCE_CELLS_LIMIT).map((cell, idx) => {
-                                const capCkb = (Number(BigInt(cell.capacity)) / SHANNON_PER_CKB).toLocaleString(undefined, { maximumFractionDigits: 8 })
+                                const capCkb = formatCkbBalance(BigInt(cell.capacity))
                                 const outpointLabel = `${shorten(cell.out_point.tx_hash, 10, 6)}:${parseInt(cell.out_point.index, 16)}`
                                 return (
                                   <tr key={idx}>
                                     <td>{idx + 1}</td>
-                                    <td className="monoSmall">{outpointLabel}</td>
+                                    <td className="monoSmall">
+                                      <span
+                                        style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                                        title={cell.out_point.tx_hash}
+                                        onClick={() => copyToClipboard(cell.out_point.tx_hash)}
+                                      >
+                                        {outpointLabel}
+                                      </span>
+                                    </td>
                                     <td>{capCkb}</td>
                                     <td className="monoSmall">
                                       {cell.type ? shorten(`${cell.type.code_hash}`, 10, 6) : '—'}

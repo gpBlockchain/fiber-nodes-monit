@@ -524,11 +524,13 @@ type GetCellsResult = {
   last_cursor: string
 }
 
+export const DEFAULT_GET_CELLS_LIMIT = '0x64'
+
 export async function getCells(
   rpcUrl: string,
   lockScript: { code_hash: string; hash_type: string; args: string },
-  limit = '0x64',
   cursor: string | null = null,
+  limit: string = DEFAULT_GET_CELLS_LIMIT,
 ): Promise<{ cells: LiveCell[]; lastCursor: string }> {
   const searchKey = {
     script: lockScript,
@@ -549,6 +551,22 @@ export async function getCells(
   return { cells, lastCursor: result?.last_cursor ?? '' }
 }
 
+export async function getAllCells(
+  rpcUrl: string,
+  lockScript: { code_hash: string; hash_type: string; args: string },
+  limit: string = DEFAULT_GET_CELLS_LIMIT,
+): Promise<LiveCell[]> {
+  const allCells: LiveCell[] = []
+  let cursor: string | null = null
+  for (;;) {
+    const { cells, lastCursor } = await getCells(rpcUrl, lockScript, cursor, limit)
+    allCells.push(...cells)
+    if (!lastCursor || lastCursor === cursor || cells.length === 0) break
+    cursor = lastCursor
+  }
+  return allCells
+}
+
 export type UdtBalance = {
   name: string
   typeScript: { code_hash: string; hash_type: string; args: string }
@@ -564,15 +582,8 @@ export type AccountBalance = {
   network: CkbNetwork
 }
 
-function scriptEquals(
-  a: { code_hash: string; hash_type: string; args: string },
-  b: { code_hash: string; hash_type: string; args: string },
-): boolean {
-  return (
-    a.code_hash.toLowerCase() === b.code_hash.toLowerCase() &&
-    a.hash_type === b.hash_type &&
-    a.args.toLowerCase() === b.args.toLowerCase()
-  )
+function buildScriptKey(script: { code_hash: string; hash_type: string; args: string }): string {
+  return `${script.code_hash.toLowerCase()}:${script.hash_type}:${script.args.toLowerCase()}`
 }
 
 export function computeAccountBalance(
@@ -584,14 +595,19 @@ export function computeAccountBalance(
   let ckbCellCount = 0
   const udtMap = new Map<string, UdtBalance>()
 
+  const udtCfgMap = new Map<string, { name: string; script: { code_hash: string; hash_type: string; args: string } }>()
+  for (const udt of udtCfgInfos) {
+    udtCfgMap.set(buildScriptKey(udt.script), udt)
+  }
+
   for (const cell of cells) {
     if (!cell.type) {
       ckbBalance += BigInt(cell.capacity)
       ckbCellCount++
     } else {
-      const matchedUdt = udtCfgInfos.find((u) => scriptEquals(u.script, cell.type!))
+      const matchedUdt = udtCfgMap.get(buildScriptKey(cell.type))
       if (matchedUdt) {
-        const key = `${matchedUdt.script.code_hash}:${matchedUdt.script.args}`
+        const key = buildScriptKey(matchedUdt.script)
         const existing = udtMap.get(key)
         const dataHex = cell.data.startsWith('0x') ? cell.data.slice(2) : cell.data
         let amount = 0n
@@ -623,4 +639,14 @@ export function computeAccountBalance(
     cells,
     network,
   }
+}
+
+export function formatCkbBalance(shannons: bigint): string {
+  const shannonsPerCkb = BigInt(SHANNON_PER_CKB)
+  const wholeCkb = shannons / shannonsPerCkb
+  const fractionShannons = shannons % shannonsPerCkb
+  if (fractionShannons === 0n) return wholeCkb.toString()
+  let fractionStr = fractionShannons.toString().padStart(8, '0')
+  fractionStr = fractionStr.replace(/0+$/, '')
+  return `${wholeCkb.toString()}.${fractionStr}`
 }
