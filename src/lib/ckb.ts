@@ -601,10 +601,9 @@ export function computeAccountBalance(
   }
 
   for (const cell of cells) {
-    if (!cell.type) {
-      ckbBalance += BigInt(cell.capacity)
-      ckbCellCount++
-    } else {
+    ckbBalance += BigInt(cell.capacity)
+    ckbCellCount++
+    if (cell.type) {
       const matchedUdt = udtCfgMap.get(buildScriptKey(cell.type))
       if (matchedUdt) {
         const key = buildScriptKey(matchedUdt.script)
@@ -625,9 +624,6 @@ export function computeAccountBalance(
             cellCount: 1,
           })
         }
-      } else {
-        ckbBalance += BigInt(cell.capacity)
-        ckbCellCount++
       }
     }
   }
