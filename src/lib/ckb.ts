@@ -3,6 +3,21 @@ export type CkbNetwork = 'testnet' | 'mainnet' | 'custom'
 export const SHANNON_PER_CKB = 100_000_000
 const MIN_LOCK_ARGS_HEX_LEN = 72
 
+export const CKB_CHAIN_HASHES: Record<string, 'testnet' | 'mainnet'> = {
+  '0x10639e0895502b5688a6be8cf69460d76541bfa4821629d86d62ba0aae3f9606': 'testnet',
+  '0x92b197aa1fba0f63633922c61c92375c9c074a93e85963554f5499fe1450d0e5': 'mainnet',
+}
+
+export function detectNetworkByChainHash(chainHash: string): CkbNetwork {
+  return CKB_CHAIN_HASHES[chainHash.toLowerCase()] ?? 'custom'
+}
+
+export function getCkbRpcUrlForChainHash(chainHash: string, customRpcUrl?: string): string {
+  const network = detectNetworkByChainHash(chainHash)
+  if (network === 'custom') return customRpcUrl || ''
+  return NETWORK_CONFIG[network].rpcUrl
+}
+
 export type CkbNetworkConfig = { rpcUrl: string; commitmentCodeHash: string }
 
 const NETWORK_CONFIG: Record<'testnet' | 'mainnet', CkbNetworkConfig> = {
@@ -485,4 +500,126 @@ export async function fetchAndParseTx(
     if (v1 === 1n) version = '1'
   }
   return { lockArgs, witness, version }
+}
+
+export type LiveCell = {
+  capacity: string
+  lock: { code_hash: string; hash_type: string; args: string }
+  type: { code_hash: string; hash_type: string; args: string } | null
+  data: string
+  out_point: { tx_hash: string; index: string }
+}
+
+type GetCellsResult = {
+  objects: {
+    output: {
+      capacity: string
+      lock: { code_hash: string; hash_type: string; args: string }
+      type?: { code_hash: string; hash_type: string; args: string } | null
+    }
+    output_data: string
+    out_point: { tx_hash: string; index: string }
+  }[]
+  last_cursor: string
+}
+
+export async function getCells(
+  rpcUrl: string,
+  lockScript: { code_hash: string; hash_type: string; args: string },
+  limit = '0x64',
+  cursor: string | null = null,
+): Promise<{ cells: LiveCell[]; lastCursor: string }> {
+  const searchKey = {
+    script: lockScript,
+    script_type: 'lock',
+    script_search_mode: 'exact',
+    with_data: true,
+  }
+  const params: unknown[] = [searchKey, 'asc', limit]
+  if (cursor) params.push(cursor)
+  const result = await callCkbRpc<GetCellsResult>(rpcUrl, 'get_cells', params)
+  const cells: LiveCell[] = (result?.objects ?? []).map((obj) => ({
+    capacity: obj.output.capacity,
+    lock: obj.output.lock,
+    type: obj.output.type ?? null,
+    data: obj.output_data ?? '0x',
+    out_point: obj.out_point,
+  }))
+  return { cells, lastCursor: result?.last_cursor ?? '' }
+}
+
+export type UdtBalance = {
+  name: string
+  typeScript: { code_hash: string; hash_type: string; args: string }
+  balance: bigint
+  cellCount: number
+}
+
+export type AccountBalance = {
+  ckbBalance: bigint
+  ckbCellCount: number
+  udtBalances: UdtBalance[]
+  cells: LiveCell[]
+  network: CkbNetwork
+}
+
+function scriptEquals(
+  a: { code_hash: string; hash_type: string; args: string },
+  b: { code_hash: string; hash_type: string; args: string },
+): boolean {
+  return (
+    a.code_hash.toLowerCase() === b.code_hash.toLowerCase() &&
+    a.hash_type === b.hash_type &&
+    a.args.toLowerCase() === b.args.toLowerCase()
+  )
+}
+
+export function computeAccountBalance(
+  cells: LiveCell[],
+  udtCfgInfos: { name: string; script: { code_hash: string; hash_type: string; args: string } }[],
+  network: CkbNetwork,
+): AccountBalance {
+  let ckbBalance = 0n
+  let ckbCellCount = 0
+  const udtMap = new Map<string, UdtBalance>()
+
+  for (const cell of cells) {
+    if (!cell.type) {
+      ckbBalance += BigInt(cell.capacity)
+      ckbCellCount++
+    } else {
+      const matchedUdt = udtCfgInfos.find((u) => scriptEquals(u.script, cell.type!))
+      if (matchedUdt) {
+        const key = `${matchedUdt.script.code_hash}:${matchedUdt.script.args}`
+        const existing = udtMap.get(key)
+        const dataHex = cell.data.startsWith('0x') ? cell.data.slice(2) : cell.data
+        let amount = 0n
+        if (dataHex.length >= 32) {
+          amount = toIntFromBigUint128Le('0x' + dataHex.substring(0, 32))
+        }
+        if (existing) {
+          existing.balance += amount
+          existing.cellCount++
+        } else {
+          udtMap.set(key, {
+            name: matchedUdt.name,
+            typeScript: matchedUdt.script,
+            balance: amount,
+            cellCount: 1,
+          })
+        }
+      } else {
+        ckbBalance += BigInt(cell.capacity)
+        ckbCellCount++
+      }
+    }
+  }
+
+  return {
+    ckbBalance,
+    ckbCellCount,
+    udtBalances: Array.from(udtMap.values()),
+    cells,
+    network,
+  }
 }

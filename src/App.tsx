@@ -13,10 +13,15 @@ import {
   parseWitness,
   parseWitnessV2,
   SHANNON_PER_CKB,
+  detectNetworkByChainHash,
+  getCkbRpcUrlForChainHash,
+  getCells,
+  computeAccountBalance,
   type CkbNetwork,
   type TraceItem,
   type ParsedLockArgs,
   type ParsedWitness,
+  type AccountBalance,
 } from './lib/ckb'
 
 type JsonObj = Record<string, unknown>
@@ -440,6 +445,13 @@ function App() {
   const [graphChannelsCurrentPageIndex, setGraphChannelsCurrentPageIndex] = useState(0)
   const [graphChannelsLoading, setGraphChannelsLoading] = useState(false)
 
+  const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
+  const [accountBalanceState, setAccountBalanceState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [accountBalanceError, setAccountBalanceError] = useState('')
+  const [accountBalanceCellsExpanded, setAccountBalanceCellsExpanded] = useState(false)
+  const [accountBalanceCustomRpcUrl, setAccountBalanceCustomRpcUrl] = useState('')
+  const ACCOUNT_BALANCE_CELLS_LIMIT = 20
+
   const toggleChannel = (id: string) => {
     setExpandedChannels((prev) => {
       const next = new Set(prev)
@@ -544,6 +556,51 @@ function App() {
       })
     }
   }, [selectedNode])
+
+  const refreshAccountBalance = useCallback(async () => {
+    if (!selectedNode || !details?.nodeInfo) return
+    const chainHash = getString(details.nodeInfo, 'chain_hash')
+    if (!chainHash) return
+    const network = detectNetworkByChainHash(chainHash)
+    const ckbRpcUrl = network === 'custom' ? accountBalanceCustomRpcUrl : getCkbRpcUrlForChainHash(chainHash)
+    if (!ckbRpcUrl) {
+      setAccountBalanceState('error')
+      setAccountBalanceError(t.customNetworkNoRpc)
+      return
+    }
+    const lockScript = details.nodeInfo['default_funding_lock_script']
+    if (!lockScript || typeof lockScript !== 'object') return
+    const ls = lockScript as { code_hash: string; hash_type: string; args: string }
+    const udtCfgInfosRaw = details.nodeInfo['udt_cfg_infos']
+    const udtCfgInfos: { name: string; script: { code_hash: string; hash_type: string; args: string } }[] = []
+    if (Array.isArray(udtCfgInfosRaw)) {
+      for (const item of udtCfgInfosRaw) {
+        const obj = item as Record<string, unknown>
+        const name = typeof obj.name === 'string' ? obj.name : 'Unknown UDT'
+        const script = obj.script as { code_hash: string; hash_type: string; args: string } | undefined
+        if (script?.code_hash) {
+          udtCfgInfos.push({ name, script })
+        }
+      }
+    }
+    setAccountBalanceState('loading')
+    setAccountBalanceError('')
+    try {
+      const { cells } = await getCells(ckbRpcUrl, ls)
+      const balance = computeAccountBalance(cells, udtCfgInfos, network)
+      setAccountBalance(balance)
+      setAccountBalanceState('ready')
+    } catch (err) {
+      setAccountBalanceState('error')
+      setAccountBalanceError(err instanceof Error ? err.message : String(err))
+    }
+  }, [selectedNode, details?.nodeInfo, accountBalanceCustomRpcUrl, t])
+
+  useEffect(() => {
+    setAccountBalance(null)
+    setAccountBalanceState('idle')
+    setAccountBalanceCellsExpanded(false)
+  }, [selectedNodeId])
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -1486,6 +1543,151 @@ function App() {
                   <div className="muted">—</div>
                 )}
               </div>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="cardHeader">
+              <div className="cardTitle">{t.accountBalance}</div>
+              <div className="muted">{t.accountBalanceDesc}</div>
+              <button
+                className="btn btnGhost"
+                onClick={() => void refreshAccountBalance()}
+                disabled={!selectedNode || !details?.nodeInfo || accountBalanceState === 'loading'}
+                style={{ padding: '6px 10px', borderRadius: 12 }}
+              >
+                {accountBalanceState === 'loading' ? t.loadingBalance : t.refreshBalance}
+              </button>
+            </div>
+            <div className="cardBody">
+              {accountBalanceState === 'idle' && !accountBalance ? (
+                <div className="muted">
+                  {details?.nodeInfo ? (
+                    <>
+                      {(() => {
+                        const ch = getString(details.nodeInfo, 'chain_hash')
+                        const net = ch ? detectNetworkByChainHash(ch) : null
+                        if (net === 'custom') {
+                          return (
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span>{t.customNetworkNoRpc}</span>
+                              <input
+                                type="text"
+                                className="inputField"
+                                placeholder={t.ckbRpcUrlPlaceholder}
+                                value={accountBalanceCustomRpcUrl}
+                                onChange={(e) => setAccountBalanceCustomRpcUrl(e.target.value)}
+                                style={{ flex: 1, minWidth: 200 }}
+                              />
+                            </div>
+                          )
+                        }
+                        return null
+                      })()}
+                    </>
+                  ) : '—'}
+                </div>
+              ) : accountBalanceState === 'loading' ? (
+                <div className="muted">{t.loadingBalance}</div>
+              ) : accountBalanceState === 'error' ? (
+                <div className="dangerRow">
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>{t.balanceFetchFailed}</div>
+                    <div className="smallNote">{accountBalanceError}</div>
+                  </div>
+                  <button className="btn" onClick={() => void refreshAccountBalance()}>
+                    {t.retry}
+                  </button>
+                </div>
+              ) : accountBalance ? (
+                <div>
+                  <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12 }}>
+                    <div className="kvGrid" style={{ flex: 1, minWidth: 200 }}>
+                      <div className="k">{t.networkLabel}</div>
+                      <div className="v">
+                        <span className="pill">{accountBalance.network}</span>
+                      </div>
+                      <div className="k">{t.ckbBalance}</div>
+                      <div className="v" style={{ fontWeight: 600, fontSize: 14 }}>
+                        {(Number(accountBalance.ckbBalance) / SHANNON_PER_CKB).toLocaleString(undefined, { maximumFractionDigits: 8 })} CKB
+                        <span className="dim" style={{ marginLeft: 8, fontWeight: 400, fontSize: 11 }}>
+                          ({accountBalance.ckbCellCount} cells)
+                        </span>
+                      </div>
+                    </div>
+                    {accountBalance.udtBalances.length > 0 ? (
+                      <div className="kvGrid" style={{ flex: 1, minWidth: 200 }}>
+                        <div className="k">{t.udtBalance}</div>
+                        <div className="v">
+                          {accountBalance.udtBalances.map((udt, idx) => (
+                            <div key={idx} style={{ marginBottom: 4 }}>
+                              <span style={{ fontWeight: 600, fontSize: 14 }}>
+                                {udt.balance.toString()} 
+                              </span>
+                              <span className="pill" style={{ marginLeft: 6 }}>{udt.name}</span>
+                              <span className="dim" style={{ marginLeft: 8, fontSize: 11 }}>
+                                ({udt.cellCount} cells)
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }}>
+                    <button
+                      className="btn btnGhost"
+                      onClick={() => setAccountBalanceCellsExpanded((v) => !v)}
+                      style={{ padding: '4px 10px', borderRadius: 10, fontSize: 11 }}
+                    >
+                      {accountBalanceCellsExpanded ? t.hideCells : t.showCells} ({t.cellCount(accountBalance.cells.length)})
+                    </button>
+                    {accountBalanceCellsExpanded ? (
+                      <div style={{ maxHeight: 320, overflow: 'auto', marginTop: 8 }}>
+                        {accountBalance.cells.length === 0 ? (
+                          <div className="muted">{t.noCells}</div>
+                        ) : (
+                          <table className="table">
+                            <thead>
+                              <tr>
+                                <th>#</th>
+                                <th>OutPoint</th>
+                                <th>Capacity (CKB)</th>
+                                <th>Type</th>
+                                <th>Data</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {accountBalance.cells.slice(0, ACCOUNT_BALANCE_CELLS_LIMIT).map((cell, idx) => {
+                                const capCkb = (Number(BigInt(cell.capacity)) / SHANNON_PER_CKB).toLocaleString(undefined, { maximumFractionDigits: 8 })
+                                const outpointLabel = `${shorten(cell.out_point.tx_hash, 10, 6)}:${parseInt(cell.out_point.index, 16)}`
+                                return (
+                                  <tr key={idx}>
+                                    <td>{idx + 1}</td>
+                                    <td className="monoSmall">{outpointLabel}</td>
+                                    <td>{capCkb}</td>
+                                    <td className="monoSmall">
+                                      {cell.type ? shorten(`${cell.type.code_hash}`, 10, 6) : '—'}
+                                    </td>
+                                    <td className="monoSmall">
+                                      {cell.data && cell.data !== '0x' ? shorten(cell.data, 14, 6) : '—'}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                        {accountBalance.cells.length > ACCOUNT_BALANCE_CELLS_LIMIT ? (
+                          <div className="muted" style={{ padding: 8, fontSize: 11 }}>
+                            … {accountBalance.cells.length - ACCOUNT_BALANCE_CELLS_LIMIT} more cells hidden
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </section>
 
