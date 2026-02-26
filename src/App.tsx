@@ -1656,15 +1656,15 @@ function App() {
                         return (
                           <>
                             <div className="k">{t.ckbAddress}</div>
-                            <div className="v" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span className="monoSmall" style={{ wordBreak: 'break-all', fontSize: 11 }}>{addr}</span>
-                              <button
-                                className="btn btnGhost"
-                                style={{ fontSize: 10, padding: '2px 8px', flexShrink: 0 }}
+                            <div className="v">
+                              <span
+                                className="monoSmall ctHashCopy"
+                                style={{ wordBreak: 'break-all', fontSize: 11 }}
+                                title={addr}
                                 onClick={() => copyToClipboard(addr)}
                               >
-                                📋
-                              </button>
+                                {addr}
+                              </span>
                             </div>
                           </>
                         )
@@ -2776,16 +2776,19 @@ function App() {
                           <div className="v">{getString(ncNodeInfo, 'node_name') ?? '—'}</div>
                           <div className="k">node_id</div>
                           <div className="v" style={{ wordBreak: 'break-all' }}>
-                            <span className="monoSmall">{getString(ncNodeInfo, 'node_id') ?? '—'}</span>
-                            {getString(ncNodeInfo, 'node_id') && (
-                              <button
-                                className="btn btnGhost"
-                                style={{ fontSize: 10, padding: '1px 6px', marginLeft: 4, flexShrink: 0 }}
-                                onClick={() => copyToClipboard(getString(ncNodeInfo, 'node_id')!)}
-                              >
-                                📋
-                              </button>
-                            )}
+                            {(() => {
+                              const nid = getString(ncNodeInfo, 'node_id')
+                              if (!nid) return '—'
+                              return (
+                                <span
+                                  className="monoSmall ctHashCopy"
+                                  title={nid}
+                                  onClick={() => copyToClipboard(nid)}
+                                >
+                                  {nid}
+                                </span>
+                              )
+                            })()}
                           </div>
                           <div className="k">version</div>
                           <div className="v">{getString(ncNodeInfo, 'version') ?? '—'}</div>
@@ -2797,9 +2800,28 @@ function App() {
                           <div className="v">{hexToNumberMaybe(ncNodeInfo['channel_count']) ?? '—'}</div>
                           <div className="k">addresses</div>
                           <div className="v">
-                            {getArray(ncNodeInfo, 'addresses')
-                              ? `${getArray(ncNodeInfo, 'addresses')!.length} addrs`
-                              : '—'}
+                            {(() => {
+                              const addrs = getArray(ncNodeInfo, 'addresses')
+                              if (!addrs || addrs.length === 0) return '—'
+                              return (
+                                <div style={{ display: 'grid', gap: 4 }}>
+                                  {addrs.map((a, i) => {
+                                    const addrStr = typeof a === 'string' ? a : JSON.stringify(a)
+                                    return (
+                                      <span
+                                        key={i}
+                                        className="monoSmall ctHashCopy"
+                                        style={{ wordBreak: 'break-all' }}
+                                        title={addrStr}
+                                        onClick={() => copyToClipboard(addrStr)}
+                                      >
+                                        {addrStr}
+                                      </span>
+                                    )
+                                  })}
+                                </div>
+                              )
+                            })()}
                           </div>
                         </div>
                       ) : null}
