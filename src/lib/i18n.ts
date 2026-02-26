@@ -179,6 +179,10 @@ const zh = {
   customNetworkNoRpc: '自定义网络需要配置 CKB RPC URL',
   ckbRpcUrlPlaceholder: 'CKB RPC URL（例如 http://127.0.0.1:8114）',
   moreCellsHidden: (count: number) => `… 还有 ${count} 个 Cell 未显示`,
+  ckbAddress: 'CKB 地址',
+  nodeInfoLabel: '节点信息',
+  nodeInfoLoading: '正在获取节点信息…',
+  nodeInfoError: '获取节点信息失败',
 }
 
 const en: typeof zh = {
@@ -344,6 +348,10 @@ const en: typeof zh = {
   customNetworkNoRpc: 'Custom network requires CKB RPC URL configuration',
   ckbRpcUrlPlaceholder: 'CKB RPC URL (e.g. http://127.0.0.1:8114)',
   moreCellsHidden: (count: number) => `… ${count} more cells hidden`,
+  ckbAddress: 'CKB Address',
+  nodeInfoLabel: 'Node Info',
+  nodeInfoLoading: 'Fetching node info…',
+  nodeInfoError: 'Failed to fetch node info',
 }
 
 export type Translations = typeof zh

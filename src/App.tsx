@@ -18,6 +18,7 @@ import {
   getAllCells,
   computeAccountBalance,
   formatCkbBalance,
+  lockScriptToAddress,
   type CkbNetwork,
   type TraceItem,
   type ParsedLockArgs,
@@ -421,6 +422,9 @@ function App() {
   const [ncShutdownForce, setNcShutdownForce] = useState(false)
   const [ncGetPaymentHash, setNcGetPaymentHash] = useState('')
   const [ncGetInvoiceHash, setNcGetInvoiceHash] = useState('')
+  const [ncNodeInfo, setNcNodeInfo] = useState<JsonObj | null>(null)
+  const [ncNodeInfoState, setNcNodeInfoState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [ncNodeInfoError, setNcNodeInfoError] = useState('')
 
   const [ctNetwork, setCtNetwork] = useState<CkbNetwork>('testnet')
   const [ctCustomRpcUrl, setCtCustomRpcUrl] = useState('')
@@ -613,6 +617,29 @@ function App() {
     setAccountBalanceState('idle')
     setAccountBalanceCellsExpanded(false)
   }, [selectedNodeId])
+
+  useEffect(() => {
+    if (viewMode !== 'nodeControl' || !selectedNode) {
+      setNcNodeInfo(null)
+      setNcNodeInfoState('idle')
+      return
+    }
+    let cancelled = false
+    setNcNodeInfoState('loading')
+    setNcNodeInfoError('')
+    callFiberRpc<JsonObj>(selectedNode, 'node_info')
+      .then((info) => {
+        if (cancelled) return
+        setNcNodeInfo(info)
+        setNcNodeInfoState('ready')
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setNcNodeInfoState('error')
+        setNcNodeInfoError(err instanceof Error ? err.message : String(err))
+      })
+    return () => { cancelled = true }
+  }, [viewMode, selectedNode])
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -1619,6 +1646,29 @@ function App() {
                       <div className="v">
                         <span className="pill">{accountBalance.network}</span>
                       </div>
+                      {(() => {
+                        const ls = details?.nodeInfo?.['default_funding_lock_script']
+                        if (!ls || typeof ls !== 'object') return null
+                        const lsObj = ls as Record<string, unknown>
+                        if (typeof lsObj.code_hash !== 'string' || typeof lsObj.hash_type !== 'string' || typeof lsObj.args !== 'string') return null
+                        const addr = lockScriptToAddress({ code_hash: lsObj.code_hash, hash_type: lsObj.hash_type, args: lsObj.args }, accountBalance.network)
+                        if (!addr) return null
+                        return (
+                          <>
+                            <div className="k">{t.ckbAddress}</div>
+                            <div className="v">
+                              <span
+                                className="monoSmall ctHashCopy"
+                                style={{ wordBreak: 'break-all', fontSize: 11 }}
+                                title={addr}
+                                onClick={() => copyToClipboard(addr)}
+                              >
+                                {addr}
+                              </span>
+                            </div>
+                          </>
+                        )
+                      })()}
                       <div className="k">{t.ckbBalance}</div>
                       <div className="v" style={{ fontWeight: 600, fontSize: 14 }}>
                         {formatCkbBalance(accountBalance.ckbBalance)} CKB
@@ -2714,6 +2764,68 @@ function App() {
                   </div>
                 ) : (
                   <>
+                    <div style={{ marginBottom: 12, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{t.nodeInfoLabel}</div>
+                      {ncNodeInfoState === 'loading' ? (
+                        <div className="muted" style={{ fontSize: 11 }}>{t.nodeInfoLoading}</div>
+                      ) : ncNodeInfoState === 'error' ? (
+                        <div style={{ fontSize: 11, color: 'var(--bad)' }}>{t.nodeInfoError}: {ncNodeInfoError}</div>
+                      ) : ncNodeInfoState === 'ready' && ncNodeInfo ? (
+                        <div className="kvGrid" style={{ fontSize: 11 }}>
+                          <div className="k">node_name</div>
+                          <div className="v">{getString(ncNodeInfo, 'node_name') ?? '—'}</div>
+                          <div className="k">node_id</div>
+                          <div className="v" style={{ wordBreak: 'break-all' }}>
+                            {(() => {
+                              const nid = getString(ncNodeInfo, 'node_id')
+                              if (!nid) return '—'
+                              return (
+                                <span
+                                  className="monoSmall ctHashCopy"
+                                  title={nid}
+                                  onClick={() => copyToClipboard(nid)}
+                                >
+                                  {nid}
+                                </span>
+                              )
+                            })()}
+                          </div>
+                          <div className="k">version</div>
+                          <div className="v">{getString(ncNodeInfo, 'version') ?? '—'}</div>
+                          <div className="k">chain_hash</div>
+                          <div className="v monoSmall">{(() => { const ch = getString(ncNodeInfo, 'chain_hash'); return ch ? shorten(ch, 18, 12) : '—' })()}</div>
+                          <div className="k">peers</div>
+                          <div className="v">{hexToNumberMaybe(ncNodeInfo['peers_count']) ?? '—'}</div>
+                          <div className="k">channels</div>
+                          <div className="v">{hexToNumberMaybe(ncNodeInfo['channel_count']) ?? '—'}</div>
+                          <div className="k">addresses</div>
+                          <div className="v">
+                            {(() => {
+                              const addrs = getArray(ncNodeInfo, 'addresses')
+                              if (!addrs || addrs.length === 0) return '—'
+                              return (
+                                <div style={{ display: 'grid', gap: 4 }}>
+                                  {addrs.map((a, i) => {
+                                    const addrStr = typeof a === 'string' ? a : JSON.stringify(a)
+                                    return (
+                                      <span
+                                        key={i}
+                                        className="monoSmall ctHashCopy"
+                                        style={{ wordBreak: 'break-all' }}
+                                        title={addrStr}
+                                        onClick={() => copyToClipboard(addrStr)}
+                                      >
+                                        {addrStr}
+                                      </span>
+                                    )
+                                  })}
+                                </div>
+                              )
+                            })()}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="ncTabs">
                       {([
                         ['connect_peer', '🔗', 'Connect Peer'],
