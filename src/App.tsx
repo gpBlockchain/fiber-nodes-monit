@@ -1649,7 +1649,9 @@ function App() {
                       {(() => {
                         const ls = details?.nodeInfo?.['default_funding_lock_script']
                         if (!ls || typeof ls !== 'object') return null
-                        const addr = lockScriptToAddress(ls as { code_hash: string; hash_type: string; args: string }, accountBalance.network)
+                        const lsObj = ls as Record<string, unknown>
+                        if (typeof lsObj.code_hash !== 'string' || typeof lsObj.hash_type !== 'string' || typeof lsObj.args !== 'string') return null
+                        const addr = lockScriptToAddress({ code_hash: lsObj.code_hash, hash_type: lsObj.hash_type, args: lsObj.args }, accountBalance.network)
                         if (!addr) return null
                         return (
                           <>
@@ -2788,7 +2790,7 @@ function App() {
                           <div className="k">version</div>
                           <div className="v">{getString(ncNodeInfo, 'version') ?? '—'}</div>
                           <div className="k">chain_hash</div>
-                          <div className="v monoSmall">{getString(ncNodeInfo, 'chain_hash') ? shorten(getString(ncNodeInfo, 'chain_hash')!, 18, 12) : '—'}</div>
+                          <div className="v monoSmall">{(() => { const ch = getString(ncNodeInfo, 'chain_hash'); return ch ? shorten(ch, 18, 12) : '—' })()}</div>
                           <div className="k">peers</div>
                           <div className="v">{hexToNumberMaybe(ncNodeInfo['peers_count']) ?? '—'}</div>
                           <div className="k">channels</div>
