@@ -18,6 +18,7 @@ import {
   getAllCells,
   computeAccountBalance,
   formatCkbBalance,
+  lockScriptToAddress,
   type CkbNetwork,
   type TraceItem,
   type ParsedLockArgs,
@@ -421,6 +422,9 @@ function App() {
   const [ncShutdownForce, setNcShutdownForce] = useState(false)
   const [ncGetPaymentHash, setNcGetPaymentHash] = useState('')
   const [ncGetInvoiceHash, setNcGetInvoiceHash] = useState('')
+  const [ncNodeInfo, setNcNodeInfo] = useState<JsonObj | null>(null)
+  const [ncNodeInfoState, setNcNodeInfoState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [ncNodeInfoError, setNcNodeInfoError] = useState('')
 
   const [ctNetwork, setCtNetwork] = useState<CkbNetwork>('testnet')
   const [ctCustomRpcUrl, setCtCustomRpcUrl] = useState('')
@@ -613,6 +617,29 @@ function App() {
     setAccountBalanceState('idle')
     setAccountBalanceCellsExpanded(false)
   }, [selectedNodeId])
+
+  useEffect(() => {
+    if (viewMode !== 'nodeControl' || !selectedNode) {
+      setNcNodeInfo(null)
+      setNcNodeInfoState('idle')
+      return
+    }
+    let cancelled = false
+    setNcNodeInfoState('loading')
+    setNcNodeInfoError('')
+    callFiberRpc<JsonObj>(selectedNode, 'node_info')
+      .then((info) => {
+        if (cancelled) return
+        setNcNodeInfo(info)
+        setNcNodeInfoState('ready')
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setNcNodeInfoState('error')
+        setNcNodeInfoError(err instanceof Error ? err.message : String(err))
+      })
+    return () => { cancelled = true }
+  }, [viewMode, selectedNode])
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -1619,6 +1646,27 @@ function App() {
                       <div className="v">
                         <span className="pill">{accountBalance.network}</span>
                       </div>
+                      {(() => {
+                        const ls = details?.nodeInfo?.['default_funding_lock_script']
+                        if (!ls || typeof ls !== 'object') return null
+                        const addr = lockScriptToAddress(ls as { code_hash: string; hash_type: string; args: string }, accountBalance.network)
+                        if (!addr) return null
+                        return (
+                          <>
+                            <div className="k">{t.ckbAddress}</div>
+                            <div className="v" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span className="monoSmall" style={{ wordBreak: 'break-all', fontSize: 11 }}>{addr}</span>
+                              <button
+                                className="btn btnGhost"
+                                style={{ fontSize: 10, padding: '2px 8px', flexShrink: 0 }}
+                                onClick={() => copyToClipboard(addr)}
+                              >
+                                📋
+                              </button>
+                            </div>
+                          </>
+                        )
+                      })()}
                       <div className="k">{t.ckbBalance}</div>
                       <div className="v" style={{ fontWeight: 600, fontSize: 14 }}>
                         {formatCkbBalance(accountBalance.ckbBalance)} CKB
@@ -2714,6 +2762,46 @@ function App() {
                   </div>
                 ) : (
                   <>
+                    <div style={{ marginBottom: 12, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{t.nodeInfoLabel}</div>
+                      {ncNodeInfoState === 'loading' ? (
+                        <div className="muted" style={{ fontSize: 11 }}>{t.nodeInfoLoading}</div>
+                      ) : ncNodeInfoState === 'error' ? (
+                        <div style={{ fontSize: 11, color: 'var(--bad)' }}>{t.nodeInfoError}: {ncNodeInfoError}</div>
+                      ) : ncNodeInfoState === 'ready' && ncNodeInfo ? (
+                        <div className="kvGrid" style={{ fontSize: 11 }}>
+                          <div className="k">node_name</div>
+                          <div className="v">{getString(ncNodeInfo, 'node_name') ?? '—'}</div>
+                          <div className="k">node_id</div>
+                          <div className="v" style={{ wordBreak: 'break-all' }}>
+                            <span className="monoSmall">{getString(ncNodeInfo, 'node_id') ?? '—'}</span>
+                            {getString(ncNodeInfo, 'node_id') && (
+                              <button
+                                className="btn btnGhost"
+                                style={{ fontSize: 10, padding: '1px 6px', marginLeft: 4, flexShrink: 0 }}
+                                onClick={() => copyToClipboard(getString(ncNodeInfo, 'node_id')!)}
+                              >
+                                📋
+                              </button>
+                            )}
+                          </div>
+                          <div className="k">version</div>
+                          <div className="v">{getString(ncNodeInfo, 'version') ?? '—'}</div>
+                          <div className="k">chain_hash</div>
+                          <div className="v monoSmall">{getString(ncNodeInfo, 'chain_hash') ? shorten(getString(ncNodeInfo, 'chain_hash')!, 18, 12) : '—'}</div>
+                          <div className="k">peers</div>
+                          <div className="v">{hexToNumberMaybe(ncNodeInfo['peers_count']) ?? '—'}</div>
+                          <div className="k">channels</div>
+                          <div className="v">{hexToNumberMaybe(ncNodeInfo['channel_count']) ?? '—'}</div>
+                          <div className="k">addresses</div>
+                          <div className="v">
+                            {getArray(ncNodeInfo, 'addresses')
+                              ? `${getArray(ncNodeInfo, 'addresses')!.length} addrs`
+                              : '—'}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="ncTabs">
                       {([
                         ['connect_peer', '🔗', 'Connect Peer'],

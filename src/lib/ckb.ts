@@ -1,3 +1,5 @@
+import { Address, Script } from '@ckb-ccc/core'
+
 export type CkbNetwork = 'testnet' | 'mainnet' | 'custom'
 
 export const SHANNON_PER_CKB = 100_000_000
@@ -665,4 +667,24 @@ export function formatCkbBalance(shannons: bigint): string {
   let fractionStr = fractionShannons.toString().padStart(8, '0')
   fractionStr = fractionStr.replace(/0+$/, '')
   return `${wholeCkb.toString()}.${fractionStr}`
+}
+
+const NETWORK_PREFIX: Record<string, string> = { testnet: 'ckt', mainnet: 'ckb' }
+
+export function lockScriptToAddress(
+  lockScript: { code_hash: string; hash_type: string; args: string },
+  network: CkbNetwork,
+): string | null {
+  try {
+    const prefix = NETWORK_PREFIX[network]
+    if (!prefix) return null
+    const script = Script.from({
+      codeHash: lockScript.code_hash,
+      hashType: lockScript.hash_type,
+      args: lockScript.args,
+    })
+    return new Address(script, prefix).toString()
+  } catch {
+    return null
+  }
 }
