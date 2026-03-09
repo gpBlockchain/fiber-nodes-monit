@@ -31,7 +31,8 @@ export async function callFiberRpc<T>(
   try {
     json = JSON.parse(text) as unknown
   } catch {
-    throw new Error(`RPC response is not JSON (HTTP ${res.status})`)
+    const preview = text.length > 512 ? text.slice(0, 512) + '…' : text
+    throw new Error(`RPC response is not JSON (HTTP ${res.status})\n${preview}`)
   }
 
   const envelope = json as JsonRpcEnvelope<T>

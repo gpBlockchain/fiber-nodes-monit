@@ -63,7 +63,8 @@ async function callCkbRpc<T>(rpcUrl: string, method: string, params: unknown[]):
   try {
     json = JSON.parse(text) as unknown
   } catch {
-    throw new Error(`CKB RPC response is not JSON (HTTP ${res.status})`)
+    const preview = text.length > 512 ? text.slice(0, 512) + '…' : text
+    throw new Error(`CKB RPC response is not JSON (HTTP ${res.status})\n${preview}`)
   }
   const envelope = json as Record<string, unknown>
   if (envelope.error) {
