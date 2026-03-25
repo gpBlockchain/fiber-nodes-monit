@@ -259,6 +259,38 @@
   word-break: break-all;
 }
 
+.topoDetailValRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.topoDetailValRow .topoDetailVal {
+  flex: 1;
+  min-width: 0;
+}
+
+.topoCopyBtn {
+  appearance: none;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 20, 0.5);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+.topoCopyBtn:hover {
+  border-color: rgba(124, 255, 214, 0.35);
+  color: var(--ink);
+  background: rgba(124, 255, 214, 0.08);
+}
+
 .topoMono {
   font-family: 'IBM Plex Mono', monospace;
 }

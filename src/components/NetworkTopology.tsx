@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
+import { copyToClipboard } from '../lib/clipboard'
 import { callFiberRpc } from '../lib/rpc'
 import { shorten, hexToNumberMaybe } from '../lib/format'
 import type { MonitoredNode } from '../lib/storage'
@@ -140,6 +141,8 @@ const i18n = {
     noPathFound: '未找到路径',
     nodeDetail: '节点详情',
     pubkey: '公钥',
+    copy: '复制',
+    copied: '已复制',
     isPublic: '公共节点',
     yes: '是',
     no: '否',
@@ -189,6 +192,8 @@ const i18n = {
     noPathFound: 'No path found',
     nodeDetail: 'Node Detail',
     pubkey: 'Public Key',
+    copy: 'Copy',
+    copied: 'Copied',
     isPublic: 'Public Node',
     yes: 'Yes',
     no: 'No',
@@ -249,8 +254,13 @@ export default function NetworkTopology({
   const [pathSearch1, setPathSearch1] = useState('')
   const [pathSearch2, setPathSearch2] = useState('')
   const [searchMsg, setSearchMsg] = useState('')
+  const [pubkeyCopied, setPubkeyCopied] = useState(false)
 
   const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null)
+
+  useEffect(() => {
+    setPubkeyCopied(false)
+  }, [selectedTopoNode?.id])
 
   const fetchAllData = useCallback(async () => {
     if (!selectedNode) return
@@ -945,7 +955,23 @@ export default function NetworkTopology({
           <div className="topoDetailBody">
             <div className="topoDetailRow">
               <span className="topoDetailKey">{t.pubkey}</span>
-              <span className="topoDetailVal topoMono">{shorten(selectedTopoNode.id, 16, 10)}</span>
+              <div className="topoDetailValRow">
+                <span className="topoDetailVal topoMono" title={selectedTopoNode.id}>
+                  {shorten(selectedTopoNode.id, 16, 10)}
+                </span>
+                <button
+                  type="button"
+                  className="topoCopyBtn"
+                  title={t.copy}
+                  onClick={() => {
+                    copyToClipboard(selectedTopoNode.id)
+                    setPubkeyCopied(true)
+                    window.setTimeout(() => setPubkeyCopied(false), 1500)
+                  }}
+                >
+                  {pubkeyCopied ? t.copied : t.copy}
+                </button>
+              </div>
             </div>
             <div className="topoDetailRow">
               <span className="topoDetailKey">{t.isPublic}</span>
