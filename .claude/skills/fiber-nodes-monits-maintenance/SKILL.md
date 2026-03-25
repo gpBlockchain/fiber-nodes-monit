@@ -10,7 +10,7 @@ This skill helps maintain and extend the **fiber-nodes-monits** project: a React
 
 Use this skill whenever you:
 - Modify the Fiber monitor UI or behavior
-- Add or change RPC-backed views (Overview, node details, Payment Hash, RPC 调试)
+- Add or change RPC-backed views（Overview、单节点详情、Payment Hash、网络拓扑、RPC 调试等）
 - Adjust polling / auto-refresh / concurrency
 - Debug issues in JSON-RPC calls or node data rendering
 
@@ -19,7 +19,7 @@ Keep instructions concise and follow existing code patterns.
 ## 1. Project Overview & Entry Points
 
 **Project root**
-- Location: `fiber/fiber-nodes-monits`
+- This repository’s root directory (folder name may be `fiber-nodes-monit` or similar; npm `name` field is `fiber-nodes-monits`).
 - Key scripts (from `package.json`):
   - `npm run dev` → local dev server (`server/dev.ts`)
   - `npm run build` → TypeScript build + Vite bundle
@@ -30,15 +30,25 @@ Keep instructions concise and follow existing code patterns.
 - `src/App.tsx`
   - Main SPA component and all current UI:
     - Node list & management (add / remove / bulk import)
-    - View modes: Dashboard / Payment Hash / RPC 调试
+    - View modes: Dashboard、Payment Hash、Channel Outpoint 扫描、RPC 调试、Commitment Lock（CKB 链上追踪）、Node Control、网络拓扑（Topology）等
     - Dashboard:
       - Overview table (multi-node summary)
       - Selected node details (node_info, peers, channels, graph_nodes, graph_channels, Pending TLCs)
     - Payment Hash view:
       - Cross-node scan of `list_channels.pending_tlcs` by Payment Hash
       - Concurrency-limited scanning with progress bar
+    - Channel Outpoint view:
+      - Cross-node `list_channels` scan; match `channel_outpoint` with case-insensitive partial match (`includes`)
     - RPC 调试 view:
       - Free-form Fiber JSON-RPC method + params caller
+    - Commitment Lock (`CommitmentTraceView` in `App.tsx`, logic in `src/lib/ckb.ts`):
+      - CKB JSON-RPC via same `/api/rpc` proxy (`url` points to CKB); tx fetch, lock/witness parse, `getLnTxTrace`-style step list
+    - Node Control:
+      - Tabbed shortcuts for common Fiber RPCs on the selected node (`connect_peer`, `open_channel`, `new_invoice`, `send_payment`, etc.)
+    - Network topology (`src/components/NetworkTopology.tsx`):
+      - Paginated `graph_nodes` / `graph_channels` from the selected sidebar node, D3 force layout
+      - Click node → node detail panel; click edge → channel detail panel (lists `underlying` channels when the edge is merged)
+    - i18n: `src/lib/i18n.ts` (`zh` / `en`, persisted under `fiber-nodes-monits:lang`)
   - Contains helpers like:
     - `useInterval` hook
     - `runWithConcurrency` concurrency helper
@@ -62,11 +72,17 @@ Keep instructions concise and follow existing code patterns.
     - Time formatting (expiry, updatedAt)
     - Generic JSON formatting (`formatJson`)
 
+- `src/lib/clipboard.ts`
+  - `copyToClipboard(text)` used by topology panels and other copy actions
+
+- `src/lib/ckb.ts`
+  - CKB RPC client (`callCkbRpc` → `/api/rpc` with CKB `url`), commitment parsing, `getLnTxTrace`, network presets (testnet/mainnet)
+
 - `server/rpcProxy.ts`
   - Node.js JSON-RPC proxy:
     - Exposes `POST /api/rpc`
     - Reads `{ url, token, method, params }` from body
-    - Forwards JSON-RPC 2.0 request to the Fiber node
+    - Forwards JSON-RPC 2.0 request to the URL in `url` (Fiber node or CKB node)
     - Adds `Authorization: Bearer {token}` when token is present
   - No persistence of credentials; per-request only.
 
@@ -75,7 +91,8 @@ Keep instructions concise and follow existing code patterns.
 Respect these invariants when modifying the project:
 
 1. **Single RPC abstraction**
-   - All RPC calls MUST go through `callFiberRpc` in `src/lib/rpc.ts`.
+   - All **Fiber** node calls from the UI MUST go through `callFiberRpc` in `src/lib/rpc.ts`.
+   - CKB calls used by Commitment Lock MUST go through `callCkbRpc` in `src/lib/ckb.ts` (which also posts to `/api/rpc`).
    - Do not call `fetch` directly to node URLs from components.
 
 2. **No comments policy**
@@ -221,8 +238,12 @@ For any non-trivial change:
      - Adding / removing / bulk importing nodes.
      - Overview refresh and progress bar.
      - Selected node details auto刷新 + 手动刷新.
-     - Payment Hash 视图扫描和进度条.
+     - Payment Hash 与 Channel Outpoint 扫描、进度条与结果表.
      - RPC 调试视图调用常见方法（`node_info`, `list_peers`, `list_channels` 等）。
+     - Commitment Lock：testnet/mainnet 或 custom CKB RPC 下追踪一笔交易（若环境可用）。
+     - Node Control：在选中节点上试一项安全只读或测试网操作。
+     - 网络拓扑：点击节点与连线，确认节点详情与通道详情面板内容与复制按钮。
+     - 语言切换：中文 / EN 与刷新后持久化。
 
 If a future change significantly modifies architecture (e.g., splitting App into multiple components or introducing a state management library), update this skill to reflect the new entry points and invariants.
 
