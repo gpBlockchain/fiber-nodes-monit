@@ -49,6 +49,10 @@ type MergedLink = {
   target: string
   channelCount: number
   totalCapacity: number
+  /** 该边上 CKB 通道容量之和（shannon） */
+  sumCkb: number
+  /** 该边上 UDT 通道容量之和（shannon） */
+  sumUdt: number
   avgFeeRate: number
   hasCkb: boolean
   hasUdt: boolean
@@ -91,6 +95,8 @@ function mergeLinks(links: TopoLink[]): MergedLink[] {
     if (existing) {
       existing.channelCount += 1
       existing.totalCapacity += l.capacity
+      if (l.isUdt) existing.sumUdt += l.capacity
+      else existing.sumCkb += l.capacity
       existing.underlying.push(l)
       existing.avgFeeRate = Math.round(
         (existing.avgFeeRate * (existing.channelCount - 1) + l.feeRate) / existing.channelCount,
@@ -103,6 +109,8 @@ function mergeLinks(links: TopoLink[]): MergedLink[] {
         target: b,
         channelCount: 1,
         totalCapacity: l.capacity,
+        sumCkb: l.isUdt ? 0 : l.capacity,
+        sumUdt: l.isUdt ? l.capacity : 0,
         avgFeeRate: l.feeRate,
         hasCkb: !l.isUdt,
         hasUdt: l.isUdt,
@@ -172,6 +180,9 @@ const i18n = {
     legendUdt: 'UDT 通道',
     legendMixed: 'CKB + UDT',
     legendDashed: '虚线 = 多通道合并',
+    linkLabelCkb: 'CKB',
+    linkLabelUdt: 'UDT',
+    legendHoverLink: '悬停连线显示容量',
     channelDetail: '通道详情',
     edgeChannelCount: '本边通道数',
     channelOutpoint: 'channel_outpoint',
@@ -233,6 +244,9 @@ const i18n = {
     legendUdt: 'UDT channel',
     legendMixed: 'CKB + UDT',
     legendDashed: 'Dashed = merged multi-channel',
+    linkLabelCkb: 'CKB',
+    linkLabelUdt: 'UDT',
+    legendHoverLink: 'Hover an edge for capacity',
     channelDetail: 'Channel Detail',
     edgeChannelCount: 'Channels on this edge',
     channelOutpoint: 'channel_outpoint',
@@ -250,6 +264,28 @@ function formatCapacity(shannon: number): string {
   if (shannon >= 1e8) return `${(shannon / 1e8).toFixed(2)} CKB`
   if (shannon >= 1e4) return `${(shannon / 1e4).toFixed(2)} × 10⁴`
   return `${shannon}`
+}
+
+/** 拓扑边容量短文案（避免「CKB 1.00 CKB」重复） */
+function formatTopoAssetLine(label: string, shannon: number): string {
+  if (shannon >= 1e8) return `${label} ${(shannon / 1e8).toFixed(2)}`
+  if (shannon >= 1e4) return `${label} ${(shannon / 1e4).toFixed(2)}×10⁴`
+  return `${label} ${shannon}`
+}
+
+/** 拓扑连线标签：分别展示边上 CKB / UDT 容量合计 */
+function formatLinkEdgeLabel(sumCkb: number, sumUdt: number, lang: Lang): string {
+  const parts: string[] = []
+  const L = i18n[lang]
+  if (sumCkb > 0) parts.push(formatTopoAssetLine(L.linkLabelCkb, sumCkb))
+  if (sumUdt > 0) parts.push(formatTopoAssetLine(L.linkLabelUdt, sumUdt))
+  return parts.join(' · ')
+}
+
+function sameUndirectedEdge(a: D3Link, sid: string, tid: string): boolean {
+  const s = (a.source as D3Node).id
+  const t = (a.target as D3Node).id
+  return (s === sid && t === tid) || (s === tid && t === sid)
 }
 
 function tsToMs(ts: number): number {
@@ -556,6 +592,9 @@ export default function NetworkTopology({
       .style('pointer-events', 'none')
 
     const hitLinkGroup = g.append('g').attr('class', 'topo-link-hits')
+    const defaultLinkStrokeWidth = (d: D3Link) =>
+      Math.min(Math.max(0.5, Math.sqrt(d.totalCapacity / 1e8) * 0.4), 3)
+
     const hitLinkSel = hitLinkGroup.selectAll<SVGLineElement, D3Link>('line')
       .data(links)
       .join('line')
@@ -672,6 +711,42 @@ export default function NetworkTopology({
       simulation.alpha(0.3).restart()
     })
 
+    const linkLabelGroup = g.append('g').attr('class', 'topo-link-labels')
+    const linkLabelSel = linkLabelGroup.selectAll<SVGTextElement, D3Link>('text')
+      .data(links)
+      .join('text')
+      .attr('class', 'topo-link-label')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '-0.45em')
+      .style('pointer-events', 'none')
+      .style('opacity', 0)
+      .text(d => formatLinkEdgeLabel(d.sumCkb, d.sumUdt, lang))
+
+    hitLinkSel
+      .on('mouseenter', (_event, d: D3Link) => {
+        const sid = (d.source as D3Node).id
+        const tid = (d.target as D3Node).id
+        linkLabelSel
+          .style('opacity', ld => (sameUndirectedEdge(ld, sid, tid) ? 1 : 0))
+          .each(function (ld) {
+            if (sameUndirectedEdge(ld, sid, tid)) {
+              const node = this as SVGTextElement
+              node.parentNode?.appendChild(node)
+            }
+          })
+        linkSel
+          .attr('stroke-opacity', ld => (sameUndirectedEdge(ld, sid, tid) ? 0.95 : 0.28))
+          .attr('stroke-width', ld => (sameUndirectedEdge(ld, sid, tid)
+            ? Math.min(defaultLinkStrokeWidth(ld) + 1.2, 5)
+            : defaultLinkStrokeWidth(ld)))
+      })
+      .on('mouseleave', () => {
+        linkLabelSel.style('opacity', 0)
+        linkSel
+          .attr('stroke-opacity', 0.5)
+          .attr('stroke-width', d => defaultLinkStrokeWidth(d))
+      })
+
     simulation.on('tick', () => {
       const linePos = (sel: d3.Selection<SVGLineElement, D3Link, SVGGElement, unknown>) => {
         sel
@@ -683,15 +758,19 @@ export default function NetworkTopology({
       linePos(linkSel)
       linePos(hitLinkSel)
 
+      linkLabelSel
+        .attr('x', d => ((d.source as D3Node).x + (d.target as D3Node).x) / 2)
+        .attr('y', d => ((d.source as D3Node).y + (d.target as D3Node).y) / 2)
+
       nodeSel.attr('transform', d => `translate(${d.x},${d.y})`)
     })
 
-    svg.datum({ g, zoom, nodes, links, linkSel, hitLinkSel, nodeSel, simulation, nodeById })
+    svg.datum({ g, zoom, nodes, links, linkSel, hitLinkSel, linkLabelSel, nodeSel, simulation, nodeById })
 
     return () => {
       simulation.stop()
     }
-  }, [loadState, topoNodes, topoLinks])
+  }, [loadState, topoNodes, topoLinks, lang])
 
   const highlightNode = useCallback((pubkey: string) => {
     if (!svgRef.current) return
@@ -967,6 +1046,7 @@ export default function NetworkTopology({
             <span className="topoLegendItem"><span style={{ color: '#ffd700' }}>━</span> {t.legendUdt}</span>
             <span className="topoLegendItem"><span style={{ color: '#b8e986' }}>━</span> {t.legendMixed}</span>
             <span className="topoLegendItem"><span style={{ color: 'var(--muted)' }}>┅</span> {t.legendDashed}</span>
+            <span className="topoLegendItem"><span style={{ color: 'var(--muted)' }}>ⓘ</span> {t.legendHoverLink}</span>
           </div>
         </div>
       )}
