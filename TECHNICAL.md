@@ -30,19 +30,20 @@
 单页应用的核心组件，包含：
 
 - 节点管理：左侧节点列表、添加 / 删除 / 批量导入
-- 顶部导航：Dashboard / Payment Hash / RPC 调试视图切换
+- 顶部导航：Dashboard、Payment Hash、Channel Outpoint 搜索、RPC 调试、Commitment 追踪、节点控制台、网络拓扑等视图切换
 - Dashboard：
   - 概览（Overview）表格
   - 选中节点详情（Node Details）
 - Payment Hash 视图：跨节点扫描 `list_channels.pending_tlcs`
 - RPC 调试视图：手动调用任意 Fiber JSON-RPC 方法
+- 网络拓扑：`src/components/NetworkTopology.tsx`（见下节）
 
 关键状态（部分）：
 
 - `nodes: MonitoredNode[]`：当前配置的监控节点
 - `summaries: Record<string, NodeSummary>`：每个节点的概览信息
 - `details: NodeDetails | null`：当前选中节点的详情（node_info / peers / channels / graph_*）
-- `viewMode: 'dashboard' | 'paymentSearch' | 'rpcDebug'`：当前界面模式
+- `viewMode`：当前界面模式（含 `dashboard`、`paymentSearch`、`channelOutpointSearch`、`rpcDebug`、`commitmentTrace`、`nodeControl`、`networkTopology` 等）
 - `autoRefresh: boolean`：当前选中节点详情的自动刷新开关（代码层默认开启）
 - `paymentSearch*` 系列 state：Payment Hash 扫描的查询、进度与结果
 - `overviewRefresh*` 系列 state：点击「刷新概览」时的进度与状态
@@ -68,6 +69,20 @@
 - `saveNodes(nodes: MonitoredNode[])`：节点列表变更时写回
 
 通过统一封装，避免在组件内直接操作 `localStorage`。
+
+### src/components/NetworkTopology.tsx
+
+基于 **当前侧边栏选中的监控节点** 作为 RPC 数据源，分页调用 `graph_nodes` / `graph_channels`（`limit` 如 `0x64`，用 `after`/`last_cursor` 翻页直至结束），在 SVG 上用 D3 力导向布局绘制拓扑。
+
+要点：
+
+- 同一对节点间的多条通道在图上可**合并为一条边**（虚线表示多条）；内部结构体 `MergedLink` 保留 `underlying: TopoLink[]`，用于详情展示
+- **可见边**使用较细描边且 `pointer-events: none`；在**节点图层下方**增加透明宽线作为点击命中区，避免遮挡节点拖拽与点击
+- **点击节点**：设置 `selectedTopoNode`，右侧展示节点详情面板
+- **点击边**：清空节点选中，设置 `selectedChannelEdge`（含两端 `node_id` 与 `underlying` 通道列表）；右侧面板按条展示 `channel_outpoint`、容量、CKB/UDT、费率，并从原始 `graph_channels` 映射中补充 `fee_rate_of_node1` / `fee_rate_of_node2`、UDT type script 等
+- 节点详情与通道详情互斥；切换 CKB/UDT 筛选时会清空通道选中状态
+
+样式见 `NetworkTopology.css`（含 `.topoChannelBlock` 等）。
 
 ### src/lib/format.ts
 

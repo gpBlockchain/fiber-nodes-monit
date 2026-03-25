@@ -32,6 +32,11 @@
     - `get_payment`、`open_channel`、`shutdown_channel`
   - 点击快捷按钮会填充对应 Method 与 Params 模板，用户可在 Params 中补全或修改字段后点击「调用」
   - RPC 响应区域对长 JSON 做高度与横向溢出控制：在卡片内滚动、长行自动换行，避免撑破页面
+- 网络拓扑视图：
+  - 以左侧选中节点为数据源，分页拉取 `graph_nodes` / `graph_channels`（直至游标结束），用 D3 力导向图展示节点与通道边
+  - 支持按全部 / 仅 CKB / 仅 UDT 筛选通道；可搜索节点、查找两节点间路径
+  - **点击节点**：右侧打开节点详情（公钥、别名、地址、容量与费率统计等）
+  - **点击两节点之间的连线**：右侧打开**通道详情**；边上若合并了多条通道（虚线），会逐条列出 `channel_outpoint`、容量、费率（含 graph 中的节点1/节点2 费率）、UDT type script 等，并支持复制 outpoint 与端点公钥
 - 自动刷新与手动刷新：
   - 当前选中节点详情每 15 秒自动刷新
   - 顶部工具栏提供「刷新当前节点」按钮，随时强制拉取最新详情
@@ -57,10 +62,16 @@ fiber-nodes-monits/
 ├─ src/
 │  ├─ App.tsx         # 主页面和 UI 逻辑
 │  ├─ App.css         # 页面样式
+│  ├─ components/
+│  │  ├─ NetworkTopology.tsx   # 网络拓扑（D3 + graph_*）
+│  │  └─ NetworkTopology.css
 │  ├─ lib/
 │  │  ├─ rpc.ts       # 前端调用 /api/rpc 的封装
 │  │  ├─ storage.ts   # 节点列表的本地存储
-│  │  └─ format.ts    # 展示相关的格式化工具
+│  │  ├─ format.ts    # 展示相关的格式化工具
+│  │  ├─ clipboard.ts # 剪贴板写入封装
+│  │  ├─ i18n.ts      # 界面语言
+│  │  └─ ckb.ts       # CKB 相关辅助（如用于跟踪等视图）
 │  └─ main.tsx        # React 入口
 └─ package.json
 ```
@@ -122,8 +133,9 @@ npm run preview
 - `node_info`
 - `list_peers`
 - `list_channels`（参数：`{ include_closed: true }`，用于概览统计、单节点 Channels 视图以及 Payment Hash 扫描）
-- `graph_nodes`（参数：`{ limit: 0x14 }`，即 20 条）
-- `graph_channels`（参数：`{ limit: 0x14 }`，即 20 条）
+- `graph_nodes` / `graph_channels`：
+  - 单节点详情中的概览区块：通常 `limit: 0x14`（20 条）
+  - **网络拓扑**视图：对二者分页拉取（例如每批 `0x64`），直到 `last_cursor` 为空，以绘制全图
 
 代理会根据前端传入的配置构造请求：
 

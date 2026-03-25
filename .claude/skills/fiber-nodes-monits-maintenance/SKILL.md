@@ -10,7 +10,7 @@ This skill helps maintain and extend the **fiber-nodes-monits** project: a React
 
 Use this skill whenever you:
 - Modify the Fiber monitor UI or behavior
-- Add or change RPC-backed views (Overview, node details, Payment Hash, RPC 调试)
+- Add or change RPC-backed views（Overview、单节点详情、Payment Hash、网络拓扑、RPC 调试等）
 - Adjust polling / auto-refresh / concurrency
 - Debug issues in JSON-RPC calls or node data rendering
 
@@ -30,7 +30,7 @@ Keep instructions concise and follow existing code patterns.
 - `src/App.tsx`
   - Main SPA component and all current UI:
     - Node list & management (add / remove / bulk import)
-    - View modes: Dashboard / Payment Hash / RPC 调试
+    - View modes: Dashboard、Payment Hash、Channel Outpoint 搜索、RPC 调试、Commitment 追踪、节点控制台、网络拓扑等
     - Dashboard:
       - Overview table (multi-node summary)
       - Selected node details (node_info, peers, channels, graph_nodes, graph_channels, Pending TLCs)
@@ -39,6 +39,9 @@ Keep instructions concise and follow existing code patterns.
       - Concurrency-limited scanning with progress bar
     - RPC 调试 view:
       - Free-form Fiber JSON-RPC method + params caller
+    - Network topology (`src/components/NetworkTopology.tsx`):
+      - Paginated `graph_nodes` / `graph_channels` from the selected sidebar node, D3 force layout
+      - Click node → node detail panel; click edge → channel detail panel (lists `underlying` channels when the edge is merged)
   - Contains helpers like:
     - `useInterval` hook
     - `runWithConcurrency` concurrency helper
@@ -61,6 +64,9 @@ Keep instructions concise and follow existing code patterns.
     - Hex amount formatting
     - Time formatting (expiry, updatedAt)
     - Generic JSON formatting (`formatJson`)
+
+- `src/lib/clipboard.ts`
+  - `copyToClipboard(text)` used by topology panels and other copy actions
 
 - `server/rpcProxy.ts`
   - Node.js JSON-RPC proxy:
@@ -223,6 +229,7 @@ For any non-trivial change:
      - Selected node details auto刷新 + 手动刷新.
      - Payment Hash 视图扫描和进度条.
      - RPC 调试视图调用常见方法（`node_info`, `list_peers`, `list_channels` 等）。
+     - 网络拓扑：点击节点与连线，确认节点详情与通道详情面板内容与复制按钮。
 
 If a future change significantly modifies architecture (e.g., splitting App into multiple components or introducing a state management library), update this skill to reflect the new entry points and invariants.
 
