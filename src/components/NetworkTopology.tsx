@@ -43,6 +43,16 @@ type TopoLink = {
   udtTypeScript: JsonObj | null
 }
 
+type MergedLink = {
+  source: string
+  target: string
+  channelCount: number
+  totalCapacity: number
+  avgFeeRate: number
+  hasCkb: boolean
+  hasUdt: boolean
+}
+
 type D3Node = d3.SimulationNodeDatum & TopoNode & {
   x: number
   y: number
@@ -50,7 +60,62 @@ type D3Node = d3.SimulationNodeDatum & TopoNode & {
   fy: number | null
 }
 
-type D3Link = d3.SimulationLinkDatum<D3Node> & TopoLink
+type D3Link = d3.SimulationLinkDatum<D3Node> & MergedLink
+
+type NodeTier = 'small' | 'medium' | 'large' | 'hub'
+
+function getNodeTier(degree: number): NodeTier {
+  if (degree >= 8) return 'hub'
+  if (degree >= 4) return 'large'
+  if (degree >= 2) return 'medium'
+  return 'small'
+}
+
+function nodeRadius(degree: number): number {
+  const tier = getNodeTier(degree)
+  if (tier === 'hub') return 14
+  if (tier === 'large') return 10
+  if (tier === 'medium') return 7
+  return 5
+}
+
+function mergeLinks(links: TopoLink[]): MergedLink[] {
+  const map = new Map<string, MergedLink>()
+  for (const l of links) {
+    const a = l.source < l.target ? l.source : l.target
+    const b = l.source < l.target ? l.target : l.source
+    const key = `${a}||${b}`
+    const existing = map.get(key)
+    if (existing) {
+      existing.channelCount += 1
+      existing.totalCapacity += l.capacity
+      existing.avgFeeRate = Math.round(
+        (existing.avgFeeRate * (existing.channelCount - 1) + l.feeRate) / existing.channelCount,
+      )
+      if (l.isUdt) existing.hasUdt = true
+      else existing.hasCkb = true
+    } else {
+      map.set(key, {
+        source: a,
+        target: b,
+        channelCount: 1,
+        totalCapacity: l.capacity,
+        avgFeeRate: l.feeRate,
+        hasCkb: !l.isUdt,
+        hasUdt: l.isUdt,
+      })
+    }
+  }
+  return Array.from(map.values())
+}
+
+function mergedLinkColor(d: MergedLink): string {
+  if (d.hasCkb && d.hasUdt) return '#b8e986'
+  if (d.hasUdt) return '#ffd700'
+  if (d.avgFeeRate < 500) return '#4da6ff'
+  if (d.avgFeeRate <= 2000) return '#ff9f43'
+  return '#ff4d6d'
+}
 
 const i18n = {
   zh: {
@@ -91,6 +156,16 @@ const i18n = {
     selectNode: '请选择左侧的节点作为数据源',
     close: '关闭',
     shannon: 'shannon',
+    legendSmall: '●  1 通道',
+    legendMedium: '◆  2–3 通道',
+    legendLarge: '⬡  4–7 通道',
+    legendHub: '★  8+ 通道',
+    legendFeeBlue: '低费率 (<500)',
+    legendFeeOrange: '中费率',
+    legendFeeRed: '高费率 (>2000)',
+    legendUdt: 'UDT 通道',
+    legendMixed: 'CKB + UDT',
+    legendDashed: '虚线 = 多通道合并',
   },
   en: {
     title: 'Network Topology',
@@ -130,6 +205,16 @@ const i18n = {
     selectNode: 'Select a node from the sidebar as data source',
     close: 'Close',
     shannon: 'shannon',
+    legendSmall: '●  1 channel',
+    legendMedium: '◆  2–3 channels',
+    legendLarge: '⬡  4–7 channels',
+    legendHub: '★  8+ channels',
+    legendFeeBlue: 'Low fee (<500)',
+    legendFeeOrange: 'Mid fee',
+    legendFeeRed: 'High fee (>2000)',
+    legendUdt: 'UDT channel',
+    legendMixed: 'CKB + UDT',
+    legendDashed: 'Dashed = merged multi-channel',
   },
 }
 
@@ -141,10 +226,6 @@ function formatCapacity(shannon: number): string {
 
 function tsToMs(ts: number): number {
   return ts < 1e12 ? ts * 1000 : ts
-}
-
-function linkNodeId(ref: string | D3Node | TopoNode): string {
-  return typeof ref === 'string' ? ref : ref.id
 }
 
 export default function NetworkTopology({
@@ -308,12 +389,14 @@ export default function NetworkTopology({
       return true
     })
 
+    const merged = mergeLinks(filteredLinks)
+
     const visibleNodeIds = new Set<string>()
-    for (const l of filteredLinks) {
-      visibleNodeIds.add(linkNodeId(l.source as string | TopoNode))
-      visibleNodeIds.add(linkNodeId(l.target as string | TopoNode))
+    for (const l of merged) {
+      visibleNodeIds.add(l.source)
+      visibleNodeIds.add(l.target)
     }
-    if (filteredLinks.length === 0) {
+    if (merged.length === 0) {
       for (const id of nodeMap.keys()) visibleNodeIds.add(id)
     }
 
@@ -321,7 +404,7 @@ export default function NetworkTopology({
 
     return {
       topoNodes: nodes,
-      topoLinks: filteredLinks,
+      topoLinks: merged,
       stats: {
         totalNodes: nodeMap.size,
         totalChannels: links.length,
@@ -350,6 +433,28 @@ export default function NetworkTopology({
     feMerge.append('feMergeNode').attr('in', 'coloredBlur')
     feMerge.append('feMergeNode').attr('in', 'SourceGraphic')
 
+    const diamondPath = (r: number) => {
+      const h = r * 1.3
+      return `M0,${-h} L${h},0 L0,${h} L${-h},0 Z`
+    }
+    const hexPath = (r: number) => {
+      const pts: string[] = []
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i - Math.PI / 2
+        pts.push(`${r * Math.cos(a)},${r * Math.sin(a)}`)
+      }
+      return `M${pts.join('L')}Z`
+    }
+    const starPath = (r: number) => {
+      const pts: string[] = []
+      for (let i = 0; i < 10; i++) {
+        const a = (Math.PI / 5) * i - Math.PI / 2
+        const rr = i % 2 === 0 ? r : r * 0.5
+        pts.push(`${rr * Math.cos(a)},${rr * Math.sin(a)}`)
+      }
+      return `M${pts.join('L')}Z`
+    }
+
     const g = svg.append('g')
 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
@@ -372,15 +477,14 @@ export default function NetworkTopology({
 
     const nodeById = new Map(nodes.map(n => [n.id, n]))
     const links: D3Link[] = topoLinks
-      .filter(l => nodeById.has(linkNodeId(l.source as string | D3Node)) &&
-        nodeById.has(linkNodeId(l.target as string | D3Node)))
+      .filter(l => nodeById.has(l.source) && nodeById.has(l.target))
       .map(l => ({ ...l }))
 
     const simulation = d3.forceSimulation<D3Node>(nodes)
       .force('link', d3.forceLink<D3Node, D3Link>(links).id(d => d.id).distance(80))
       .force('charge', d3.forceManyBody().strength(-200))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide<D3Node>().radius(d => Math.sqrt(d.channels.length + 1) * 5 + 10))
+      .force('collide', d3.forceCollide<D3Node>().radius(d => nodeRadius(d.channels.length) + 6))
 
     simulationRef.current = simulation
 
@@ -388,14 +492,10 @@ export default function NetworkTopology({
     const linkSel = linkGroup.selectAll<SVGLineElement, D3Link>('line')
       .data(links)
       .join('line')
-      .attr('stroke', d => {
-        if (d.isUdt) return '#ffd700'
-        if (d.feeRate < 500) return '#4da6ff'
-        if (d.feeRate <= 2000) return '#ff9f43'
-        return '#ff4d6d'
-      })
-      .attr('stroke-width', d => Math.max(1.5, Math.sqrt(d.capacity / 1e8) * 1.5))
-      .attr('stroke-opacity', 0.6)
+      .attr('stroke', mergedLinkColor)
+      .attr('stroke-width', d => Math.min(Math.max(0.5, Math.sqrt(d.totalCapacity / 1e8) * 0.4), 3))
+      .attr('stroke-opacity', 0.5)
+      .attr('stroke-dasharray', d => d.channelCount > 1 ? '6,3' : 'none')
 
     const nodeGroup = g.append('g').attr('class', 'topo-nodes')
     const nodeSel = nodeGroup.selectAll<SVGGElement, D3Node>('g')
@@ -403,20 +503,51 @@ export default function NetworkTopology({
       .join('g')
       .attr('cursor', 'pointer')
 
-    nodeSel.append('circle')
-      .attr('r', d => Math.sqrt(d.channels.length + 1) * 4 + 5)
-      .attr('fill', d => {
-        return (now - tsToMs(d.timestamp)) < threeDaysMs ? '#7cffd6' : '#3a5a4a'
-      })
-      .attr('stroke', 'rgba(124,255,214,0.3)')
-      .attr('stroke-width', 1.5)
+    const nodeFill = (d: D3Node) =>
+      (now - tsToMs(d.timestamp)) < threeDaysMs ? '#7cffd6' : '#3a5a4a'
+
+    nodeSel.each(function (d) {
+      const el = d3.select(this)
+      const tier = getNodeTier(d.channels.length)
+      const r = nodeRadius(d.channels.length)
+      const fill = nodeFill(d)
+      if (tier === 'small') {
+        el.append('circle')
+          .attr('r', r)
+          .attr('fill', fill)
+          .attr('stroke', 'rgba(124,255,214,0.3)')
+          .attr('stroke-width', 1)
+          .attr('class', 'topo-shape')
+      } else if (tier === 'medium') {
+        el.append('path')
+          .attr('d', diamondPath(r))
+          .attr('fill', fill)
+          .attr('stroke', 'rgba(124,255,214,0.4)')
+          .attr('stroke-width', 1)
+          .attr('class', 'topo-shape')
+      } else if (tier === 'large') {
+        el.append('path')
+          .attr('d', hexPath(r))
+          .attr('fill', fill)
+          .attr('stroke', 'rgba(138,125,255,0.5)')
+          .attr('stroke-width', 1.2)
+          .attr('class', 'topo-shape')
+      } else {
+        el.append('path')
+          .attr('d', starPath(r))
+          .attr('fill', fill)
+          .attr('stroke', 'rgba(255,215,0,0.6)')
+          .attr('stroke-width', 1.2)
+          .attr('class', 'topo-shape')
+      }
+    })
 
     nodeSel.filter(d => d.isPublic)
       .append('text')
       .text('👑')
       .attr('text-anchor', 'middle')
-      .attr('dy', d => -(Math.sqrt(d.channels.length + 1) * 4 + 10))
-      .attr('font-size', '12px')
+      .attr('dy', d => -(nodeRadius(d.channels.length) + 6))
+      .attr('font-size', '10px')
       .style('pointer-events', 'none')
 
     nodeSel.append('title')
@@ -513,13 +644,13 @@ export default function NetworkTopology({
 
     datum.nodeSel
       .filter(d => d.id === target.id)
-      .select('circle')
-      .transition().duration(300).attr('stroke', '#ff4d6d').attr('stroke-width', 6)
+      .select('.topo-shape')
+      .transition().duration(300).attr('stroke', '#ff4d6d').attr('stroke-width', 5)
       .transition().duration(300).attr('stroke', '#7cffd6').attr('stroke-width', 2)
-      .transition().duration(300).attr('stroke', '#ff4d6d').attr('stroke-width', 6)
+      .transition().duration(300).attr('stroke', '#ff4d6d').attr('stroke-width', 5)
       .transition().duration(300).attr('stroke', '#7cffd6').attr('stroke-width', 2)
-      .transition().duration(300).attr('stroke', '#ff4d6d').attr('stroke-width', 6)
-      .transition().duration(300).attr('stroke', 'rgba(124,255,214,0.3)').attr('stroke-width', 1.5)
+      .transition().duration(300).attr('stroke', '#ff4d6d').attr('stroke-width', 5)
+      .transition().duration(300).attr('stroke', 'rgba(124,255,214,0.3)').attr('stroke-width', 1)
   }, [topoNodes, t])
 
   const highlightPath = useCallback((pubkey1: string, pubkey2: string) => {
@@ -592,32 +723,43 @@ export default function NetworkTopology({
     const pathLinkSet = new Set(pathLinkIdxs)
 
     datum.nodeSel
-      .select('circle')
+      .select('.topo-shape')
       .transition().duration(500)
       .attr('fill', (d: D3Node) => pathNodeSet.has(d.id) ? '#00ffff' : '#3a5a4a')
       .attr('stroke', (d: D3Node) => pathNodeSet.has(d.id) ? '#00ffff' : 'rgba(124,255,214,0.3)')
-      .attr('stroke-width', (d: D3Node) => pathNodeSet.has(d.id) ? 4 : 1.5)
+      .attr('stroke-width', (d: D3Node) => pathNodeSet.has(d.id) ? 3 : 1)
 
     datum.nodeSel
       .filter((d: D3Node) => pathNodeSet.has(d.id))
-      .select('circle')
+      .select('.topo-shape')
       .each(function (d: D3Node) {
-        const circle = d3.select(this as SVGCircleElement)
-        const baseR = Math.sqrt(d.channels.length + 1) * 4 + 5
-        const bigR = baseR + 7
-        function pulse() {
-          circle
-            .transition().duration(600).attr('r', bigR)
-            .transition().duration(600).attr('r', baseR)
-            .on('end', pulse)
+        const shape = d3.select(this as SVGElement)
+        const tier = getNodeTier(d.channels.length)
+        const r = nodeRadius(d.channels.length)
+        if (tier === 'small') {
+          const bigR = r + 5
+          function pulse() {
+            shape
+              .transition().duration(600).attr('r', bigR)
+              .transition().duration(600).attr('r', r)
+              .on('end', pulse)
+          }
+          pulse()
+        } else {
+          function pulse() {
+            shape
+              .transition().duration(600).attr('stroke-width', 4).attr('stroke', '#00ffff')
+              .transition().duration(600).attr('stroke-width', 1.2).attr('stroke', '#00ffff')
+              .on('end', pulse)
+          }
+          pulse()
         }
-        pulse()
       })
 
     datum.linkSel
       .transition().duration(500)
       .attr('stroke', (_d: D3Link, i: number) => pathLinkSet.has(i) ? '#00ffff' : 'rgba(100,100,100,0.3)')
-      .attr('stroke-width', (_d: D3Link, i: number) => pathLinkSet.has(i) ? 4 : 1)
+      .attr('stroke-width', (_d: D3Link, i: number) => pathLinkSet.has(i) ? 3 : 0.5)
       .attr('stroke-opacity', (_d: D3Link, i: number) => pathLinkSet.has(i) ? 1 : 0.3)
       .style('filter', (_d: D3Link, i: number) => pathLinkSet.has(i) ? 'url(#glow)' : 'none')
 
@@ -644,26 +786,28 @@ export default function NetworkTopology({
 
     setTimeout(() => {
       datum.nodeSel
-        .select('circle')
+        .select('.topo-shape')
         .interrupt()
         .transition().duration(800)
         .attr('fill', (d: D3Node) => {
           return (Date.now() - tsToMs(d.timestamp)) < 3 * 24 * 60 * 60 * 1000 ? '#7cffd6' : '#3a5a4a'
         })
         .attr('stroke', 'rgba(124,255,214,0.3)')
-        .attr('stroke-width', 1.5)
-        .attr('r', (d: D3Node) => Math.sqrt(d.channels.length + 1) * 4 + 5)
+        .attr('stroke-width', 1)
+
+      datum.nodeSel
+        .each(function (d: D3Node) {
+          const shape = d3.select(this).select('.topo-shape')
+          if (getNodeTier(d.channels.length) === 'small') {
+            shape.attr('r', nodeRadius(d.channels.length))
+          }
+        })
 
       datum.linkSel
         .transition().duration(800)
-        .attr('stroke', (d: D3Link) => {
-          if (d.isUdt) return '#ffd700'
-          if (d.feeRate < 500) return '#4da6ff'
-          if (d.feeRate <= 2000) return '#ff9f43'
-          return '#ff4d6d'
-        })
-        .attr('stroke-width', (d: D3Link) => Math.max(1.5, Math.sqrt(d.capacity / 1e8) * 1.5))
-        .attr('stroke-opacity', 0.6)
+        .attr('stroke', mergedLinkColor)
+        .attr('stroke-width', (d: D3Link) => Math.min(Math.max(0.5, Math.sqrt(d.totalCapacity / 1e8) * 0.4), 3))
+        .attr('stroke-opacity', 0.5)
         .style('filter', 'none')
     }, 5000)
   }, [t])
@@ -720,6 +864,25 @@ export default function NetworkTopology({
           <div className="topoStatItem">
             <span className="topoStatValue">{formatCapacity(stats.totalUdtCapacity)}</span>
             <span className="topoStatLabel">{t.udtCapacity}</span>
+          </div>
+        </div>
+      )}
+
+      {loadState === 'ready' && (
+        <div className="topoLegend">
+          <div className="topoLegendGroup">
+            <span className="topoLegendItem"><span style={{ color: '#7cffd6' }}>●</span> {t.legendSmall}</span>
+            <span className="topoLegendItem"><span style={{ color: '#7cffd6' }}>◆</span> {t.legendMedium}</span>
+            <span className="topoLegendItem"><span style={{ color: '#7cffd6' }}>⬡</span> {t.legendLarge}</span>
+            <span className="topoLegendItem"><span style={{ color: '#ffd700' }}>★</span> {t.legendHub}</span>
+          </div>
+          <div className="topoLegendGroup">
+            <span className="topoLegendItem"><span style={{ color: '#4da6ff' }}>━</span> {t.legendFeeBlue}</span>
+            <span className="topoLegendItem"><span style={{ color: '#ff9f43' }}>━</span> {t.legendFeeOrange}</span>
+            <span className="topoLegendItem"><span style={{ color: '#ff4d6d' }}>━</span> {t.legendFeeRed}</span>
+            <span className="topoLegendItem"><span style={{ color: '#ffd700' }}>━</span> {t.legendUdt}</span>
+            <span className="topoLegendItem"><span style={{ color: '#b8e986' }}>━</span> {t.legendMixed}</span>
+            <span className="topoLegendItem"><span style={{ color: 'var(--muted)' }}>┅</span> {t.legendDashed}</span>
           </div>
         </div>
       )}
