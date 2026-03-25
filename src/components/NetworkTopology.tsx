@@ -139,6 +139,14 @@ function formatCapacity(shannon: number): string {
   return `${shannon}`
 }
 
+function tsToMs(ts: number): number {
+  return ts < 1e12 ? ts * 1000 : ts
+}
+
+function linkNodeId(ref: string | D3Node | TopoNode): string {
+  return typeof ref === 'string' ? ref : ref.id
+}
+
 export default function NetworkTopology({
   selectedNode,
   lang,
@@ -302,8 +310,8 @@ export default function NetworkTopology({
 
     const visibleNodeIds = new Set<string>()
     for (const l of filteredLinks) {
-      visibleNodeIds.add(typeof l.source === 'string' ? l.source : (l.source as unknown as TopoNode).id)
-      visibleNodeIds.add(typeof l.target === 'string' ? l.target : (l.target as unknown as TopoNode).id)
+      visibleNodeIds.add(linkNodeId(l.source as string | TopoNode))
+      visibleNodeIds.add(linkNodeId(l.target as string | TopoNode))
     }
     if (filteredLinks.length === 0) {
       for (const id of nodeMap.keys()) visibleNodeIds.add(id)
@@ -364,8 +372,8 @@ export default function NetworkTopology({
 
     const nodeById = new Map(nodes.map(n => [n.id, n]))
     const links: D3Link[] = topoLinks
-      .filter(l => nodeById.has(typeof l.source === 'string' ? l.source : (l.source as unknown as D3Node).id) &&
-        nodeById.has(typeof l.target === 'string' ? l.target : (l.target as unknown as D3Node).id))
+      .filter(l => nodeById.has(linkNodeId(l.source as string | D3Node)) &&
+        nodeById.has(linkNodeId(l.target as string | D3Node)))
       .map(l => ({ ...l }))
 
     const simulation = d3.forceSimulation<D3Node>(nodes)
@@ -398,8 +406,7 @@ export default function NetworkTopology({
     nodeSel.append('circle')
       .attr('r', d => Math.sqrt(d.channels.length + 1) * 4 + 5)
       .attr('fill', d => {
-        const tsMs = d.timestamp < 1e12 ? d.timestamp * 1000 : d.timestamp
-        return (now - tsMs) < threeDaysMs ? '#7cffd6' : '#3a5a4a'
+        return (now - tsToMs(d.timestamp)) < threeDaysMs ? '#7cffd6' : '#3a5a4a'
       })
       .attr('stroke', 'rgba(124,255,214,0.3)')
       .attr('stroke-width', 1.5)
@@ -496,7 +503,8 @@ export default function NetworkTopology({
     if (tn) setSelectedTopoNode(tn)
 
     svgEl.transition().duration(750).call(
-      datum.zoom.transform as unknown as (t: d3.Transition<SVGSVGElement, unknown, null, undefined>, ...args: unknown[]) => void,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      datum.zoom.transform as any,
       d3.zoomIdentity.translate(
         (svgRef.current?.clientWidth ?? 800) / 2 - target.x,
         (svgRef.current?.clientHeight ?? 600) / 2 - target.y,
@@ -629,7 +637,8 @@ export default function NetworkTopology({
     const cy = (minY + maxY) / 2
 
     svgEl.transition().duration(750).call(
-      datum.zoom.transform as unknown as (t: d3.Transition<SVGSVGElement, unknown, null, undefined>, ...args: unknown[]) => void,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      datum.zoom.transform as any,
       d3.zoomIdentity.translate(svgW / 2 - cx * scale, svgH / 2 - cy * scale).scale(scale),
     )
 
@@ -639,8 +648,7 @@ export default function NetworkTopology({
         .interrupt()
         .transition().duration(800)
         .attr('fill', (d: D3Node) => {
-          const tsMs = d.timestamp < 1e12 ? d.timestamp * 1000 : d.timestamp
-          return (Date.now() - tsMs) < 3 * 24 * 60 * 60 * 1000 ? '#7cffd6' : '#3a5a4a'
+          return (Date.now() - tsToMs(d.timestamp)) < 3 * 24 * 60 * 60 * 1000 ? '#7cffd6' : '#3a5a4a'
         })
         .attr('stroke', 'rgba(124,255,214,0.3)')
         .attr('stroke-width', 1.5)
@@ -812,7 +820,7 @@ export default function NetworkTopology({
               <span className="topoDetailKey">{t.lastUpdate}</span>
               <span className="topoDetailVal">
                 {selectedTopoNode.timestamp > 0
-                  ? new Date(selectedTopoNode.timestamp < 1e12 ? selectedTopoNode.timestamp * 1000 : selectedTopoNode.timestamp).toLocaleString()
+                  ? new Date(tsToMs(selectedTopoNode.timestamp)).toLocaleString()
                   : '—'}
               </span>
             </div>
