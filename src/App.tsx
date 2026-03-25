@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import NetworkTopology from './components/NetworkTopology'
 import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from './lib/format'
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
@@ -366,7 +367,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace' | 'nodeControl'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace' | 'nodeControl' | 'networkTopology'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -1358,6 +1359,12 @@ function App() {
                 style={viewMode === 'nodeControl' ? { borderColor: 'rgba(124,255,214,0.5)', background: 'linear-gradient(135deg, rgba(124,255,214,0.12), rgba(138,125,255,0.12))' } : undefined}
               >
                 ⚡ Node Control
+              </button>
+              <button
+                className={viewMode === 'networkTopology' ? 'btn' : 'btn btnGhost'}
+                onClick={() => setViewMode('networkTopology')}
+              >
+                🕸️ Network Topology
               </button>
             </div>
             {viewMode === 'dashboard' ? (
@@ -3143,6 +3150,20 @@ function App() {
                 </div>
               </section>
             )}
+          </div>
+        ) : null}
+
+        {viewMode === 'networkTopology' ? (
+          <div className="layout">
+            <section className="card" style={{ display: 'flex', flexDirection: 'column', minHeight: 640 }}>
+              <div className="cardHeader">
+                <div className="cardTitle">🕸️ Network Topology</div>
+                <div className="muted">{selectedNode ? selectedNode.name : '—'}</div>
+              </div>
+              <div className="cardBody" style={{ padding: 0, flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <NetworkTopology key={selectedNode?.id ?? ''} node={selectedNode ?? null} />
+              </div>
+            </section>
           </div>
         ) : null}
 
