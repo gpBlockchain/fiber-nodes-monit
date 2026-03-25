@@ -4,6 +4,7 @@ import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from '
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
 import { loadLang, saveLang, translations, I18nContext, useT, type Lang, type Translations } from './lib/i18n'
+import NetworkTopology from './components/NetworkTopology'
 import {
   resolveNetworkConfig,
   getLnTxTrace,
@@ -366,7 +367,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace' | 'nodeControl'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace' | 'nodeControl' | 'networkTopology'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -1358,6 +1359,12 @@ function App() {
                 style={viewMode === 'nodeControl' ? { borderColor: 'rgba(124,255,214,0.5)', background: 'linear-gradient(135deg, rgba(124,255,214,0.12), rgba(138,125,255,0.12))' } : undefined}
               >
                 ⚡ Node Control
+              </button>
+              <button
+                className={viewMode === 'networkTopology' ? 'btn' : 'btn btnGhost'}
+                onClick={() => setViewMode('networkTopology')}
+              >
+                🌐 Topology
               </button>
             </div>
             {viewMode === 'dashboard' ? (
@@ -3144,6 +3151,10 @@ function App() {
               </section>
             )}
           </div>
+        ) : null}
+
+        {viewMode === 'networkTopology' ? (
+          <NetworkTopology selectedNode={selectedNode ?? null} lang={lang} />
         ) : null}
 
         {modalOpen ? (

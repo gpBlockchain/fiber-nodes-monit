@@ -1,0 +1,289 @@
+.topoContainer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 100px);
+  gap: 0;
+}
+
+.topoEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.topoToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.topoTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.topoControls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topoFilterGroup {
+  display: flex;
+  gap: 4px;
+}
+
+.topoFilterBtn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 20, 0.5);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 160ms ease;
+  font-family: inherit;
+}
+
+.topoFilterBtn:hover {
+  border-color: rgba(124, 255, 214, 0.3);
+  color: var(--ink);
+}
+
+.topoFilterActive {
+  border-color: rgba(124, 255, 214, 0.5);
+  background: linear-gradient(135deg, rgba(124, 255, 214, 0.10), rgba(138, 125, 255, 0.08));
+  color: var(--ink);
+}
+
+.topoStats {
+  display: flex;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.topoStatItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 20px;
+  background: rgba(14, 18, 30, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 120px;
+}
+
+.topoStatValue {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.topoStatLabel {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.topoSearchBar {
+  display: flex;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.topoSearchGroup {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.topoSearchInput {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 20, 0.7);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  width: 260px;
+  outline: none;
+  transition: border-color 160ms ease;
+}
+
+.topoSearchInput:focus {
+  border-color: var(--accent);
+}
+
+.topoSearchHalf {
+  width: 180px;
+}
+
+.topoSearchBtn {
+  appearance: none;
+  border: 1px solid rgba(124, 255, 214, 0.3);
+  background: linear-gradient(135deg, rgba(124, 255, 214, 0.08), rgba(138, 125, 255, 0.06));
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 160ms ease;
+  white-space: nowrap;
+}
+
+.topoSearchBtn:hover {
+  background: linear-gradient(135deg, rgba(124, 255, 214, 0.15), rgba(138, 125, 255, 0.10));
+  border-color: var(--accent);
+}
+
+.topoSearchMsg {
+  font-size: 12px;
+  color: #ff9f43;
+  padding: 0 4px;
+}
+
+.topoGraphArea {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 30% 50%, rgba(124, 255, 214, 0.03) 0%, transparent 60%),
+    radial-gradient(ellipse at 70% 50%, rgba(138, 125, 255, 0.03) 0%, transparent 60%),
+    var(--bg0);
+}
+
+.topoSvg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.topoLoading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 14px;
+  z-index: 5;
+  background: rgba(7, 10, 15, 0.7);
+  backdrop-filter: blur(4px);
+}
+
+.topoDetailPanel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 340px;
+  max-height: 100%;
+  overflow-y: auto;
+  background: rgba(14, 18, 30, 0.92);
+  border-left: 1px solid var(--line);
+  backdrop-filter: blur(16px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+}
+
+.topoDetailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.topoDetailClose {
+  appearance: none;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 160ms;
+}
+
+.topoDetailClose:hover {
+  background: rgba(255, 77, 109, 0.15);
+  color: #ff4d6d;
+}
+
+.topoDetailBody {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.topoDetailRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.topoDetailKey {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.topoDetailVal {
+  font-size: 13px;
+  color: var(--ink);
+  word-break: break-all;
+}
+
+.topoMono {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.topoLegend {
+  display: flex;
+  gap: 16px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.topoLegendGroup {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.topoLegendItem {
+  font-size: 11px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
