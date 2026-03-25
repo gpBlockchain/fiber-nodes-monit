@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
 import { copyToClipboard } from '../lib/clipboard'
 import { callFiberRpc } from '../lib/rpc'
-import { shorten, hexToNumberMaybe } from '../lib/format'
+import { shorten, hexToNumberMaybe, formatJson } from '../lib/format'
 import type { MonitoredNode } from '../lib/storage'
 import type { Lang } from '../lib/i18n'
 import './NetworkTopology.css'
@@ -52,6 +52,7 @@ type MergedLink = {
   avgFeeRate: number
   hasCkb: boolean
   hasUdt: boolean
+  underlying: TopoLink[]
 }
 
 type D3Node = d3.SimulationNodeDatum & TopoNode & {
@@ -90,6 +91,7 @@ function mergeLinks(links: TopoLink[]): MergedLink[] {
     if (existing) {
       existing.channelCount += 1
       existing.totalCapacity += l.capacity
+      existing.underlying.push(l)
       existing.avgFeeRate = Math.round(
         (existing.avgFeeRate * (existing.channelCount - 1) + l.feeRate) / existing.channelCount,
       )
@@ -104,6 +106,7 @@ function mergeLinks(links: TopoLink[]): MergedLink[] {
         avgFeeRate: l.feeRate,
         hasCkb: !l.isUdt,
         hasUdt: l.isUdt,
+        underlying: [l],
       })
     }
   }
@@ -169,6 +172,16 @@ const i18n = {
     legendUdt: 'UDT 通道',
     legendMixed: 'CKB + UDT',
     legendDashed: '虚线 = 多通道合并',
+    channelDetail: '通道详情',
+    edgeChannelCount: '本边通道数',
+    channelOutpoint: 'channel_outpoint',
+    assetType: '资产类型',
+    feeRateNode1: '节点1费率 (ppm)',
+    feeRateNode2: '节点2费率 (ppm)',
+    feeRateAvg: '平均费率 (ppm)',
+    udtTypeScript: 'UDT type script',
+    endpointA: '端点 A',
+    endpointB: '端点 B',
   },
   en: {
     title: 'Network Topology',
@@ -220,6 +233,16 @@ const i18n = {
     legendUdt: 'UDT channel',
     legendMixed: 'CKB + UDT',
     legendDashed: 'Dashed = merged multi-channel',
+    channelDetail: 'Channel Detail',
+    edgeChannelCount: 'Channels on this edge',
+    channelOutpoint: 'channel_outpoint',
+    assetType: 'Asset type',
+    feeRateNode1: 'Node1 fee rate (ppm)',
+    feeRateNode2: 'Node2 fee rate (ppm)',
+    feeRateAvg: 'Avg fee rate (ppm)',
+    udtTypeScript: 'UDT type script',
+    endpointA: 'Endpoint A',
+    endpointB: 'Endpoint B',
   },
 }
 
@@ -250,6 +273,12 @@ export default function NetworkTopology({
   const [graphChannels, setGraphChannels] = useState<JsonObj[]>([])
   const [channelFilter, setChannelFilter] = useState<'all' | 'ckb' | 'udt'>('all')
   const [selectedTopoNode, setSelectedTopoNode] = useState<TopoNode | null>(null)
+  const [selectedChannelEdge, setSelectedChannelEdge] = useState<{
+    sourceId: string
+    targetId: string
+    channels: TopoLink[]
+  } | null>(null)
+  const [channelCopiedOutpoint, setChannelCopiedOutpoint] = useState<string | null>(null)
   const [singleSearch, setSingleSearch] = useState('')
   const [pathSearch1, setPathSearch1] = useState('')
   const [pathSearch2, setPathSearch2] = useState('')
@@ -261,6 +290,14 @@ export default function NetworkTopology({
   useEffect(() => {
     setPubkeyCopied(false)
   }, [selectedTopoNode?.id])
+
+  useEffect(() => {
+    setChannelCopiedOutpoint(null)
+  }, [selectedChannelEdge?.sourceId, selectedChannelEdge?.targetId])
+
+  useEffect(() => {
+    setSelectedChannelEdge(null)
+  }, [channelFilter])
 
   const fetchAllData = useCallback(async () => {
     if (!selectedNode) return
@@ -424,6 +461,16 @@ export default function NetworkTopology({
     }
   }, [graphNodes, graphChannels, channelFilter])
 
+  const graphChannelByOutpoint = useMemo(() => {
+    const m = new Map<string, JsonObj>()
+    for (const gc of graphChannels) {
+      const o = asObj(gc)
+      const op = getString(o, 'channel_outpoint')
+      if (op) m.set(op, o)
+    }
+    return m
+  }, [graphChannels])
+
   useEffect(() => {
     if (loadState !== 'ready' || !svgRef.current || !containerRef.current) return
 
@@ -506,6 +553,25 @@ export default function NetworkTopology({
       .attr('stroke-width', d => Math.min(Math.max(0.5, Math.sqrt(d.totalCapacity / 1e8) * 0.4), 3))
       .attr('stroke-opacity', 0.5)
       .attr('stroke-dasharray', d => d.channelCount > 1 ? '6,3' : 'none')
+      .style('pointer-events', 'none')
+
+    const hitLinkGroup = g.append('g').attr('class', 'topo-link-hits')
+    const hitLinkSel = hitLinkGroup.selectAll<SVGLineElement, D3Link>('line')
+      .data(links)
+      .join('line')
+      .attr('stroke', 'transparent')
+      .attr('stroke-width', 16)
+      .style('cursor', 'pointer')
+      .style('pointer-events', 'stroke')
+      .on('click', (event: MouseEvent, d: D3Link) => {
+        event.stopPropagation()
+        setSelectedTopoNode(null)
+        setSelectedChannelEdge({
+          sourceId: (d.source as D3Node).id,
+          targetId: (d.target as D3Node).id,
+          channels: d.underlying,
+        })
+      })
 
     const nodeGroup = g.append('g').attr('class', 'topo-nodes')
     const nodeSel = nodeGroup.selectAll<SVGGElement, D3Node>('g')
@@ -582,6 +648,7 @@ export default function NetworkTopology({
     nodeSel.call(drag)
 
     nodeSel.on('click', (_event: MouseEvent, d: D3Node) => {
+      setSelectedChannelEdge(null)
       if (d.fx !== null) {
         d.fx = null
         d.fy = null
@@ -606,16 +673,20 @@ export default function NetworkTopology({
     })
 
     simulation.on('tick', () => {
-      linkSel
-        .attr('x1', d => (d.source as D3Node).x)
-        .attr('y1', d => (d.source as D3Node).y)
-        .attr('x2', d => (d.target as D3Node).x)
-        .attr('y2', d => (d.target as D3Node).y)
+      const linePos = (sel: d3.Selection<SVGLineElement, D3Link, SVGGElement, unknown>) => {
+        sel
+          .attr('x1', d => (d.source as D3Node).x)
+          .attr('y1', d => (d.source as D3Node).y)
+          .attr('x2', d => (d.target as D3Node).x)
+          .attr('y2', d => (d.target as D3Node).y)
+      }
+      linePos(linkSel)
+      linePos(hitLinkSel)
 
       nodeSel.attr('transform', d => `translate(${d.x},${d.y})`)
     })
 
-    svg.datum({ g, zoom, nodes, links, linkSel, nodeSel, simulation, nodeById })
+    svg.datum({ g, zoom, nodes, links, linkSel, hitLinkSel, nodeSel, simulation, nodeById })
 
     return () => {
       simulation.stop()
@@ -641,7 +712,10 @@ export default function NetworkTopology({
     setSearchMsg('')
 
     const tn = topoNodes.find(n => n.id === target.id)
-    if (tn) setSelectedTopoNode(tn)
+    if (tn) {
+      setSelectedChannelEdge(null)
+      setSelectedTopoNode(tn)
+    }
 
     svgEl.transition().duration(750).call(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -946,11 +1020,119 @@ export default function NetworkTopology({
         <svg ref={svgRef} className="topoSvg" />
       </div>
 
-      {selectedTopoNode && (
+      {selectedChannelEdge && (
+        <div className="topoDetailPanel">
+          <div className="topoDetailHeader">
+            <span>{t.channelDetail}</span>
+            <button type="button" className="topoDetailClose" onClick={() => setSelectedChannelEdge(null)}>✕</button>
+          </div>
+          <div className="topoDetailBody">
+            {(['sourceId', 'targetId'] as const).map((key, idx) => {
+              const id = selectedChannelEdge[key]
+              const label = idx === 0 ? t.endpointA : t.endpointB
+              const alias = topoNodes.find(n => n.id === id)?.alias ?? ''
+              return (
+                <div key={key} className="topoDetailRow">
+                  <span className="topoDetailKey">{label}</span>
+                  <div className="topoDetailValRow">
+                    <span className="topoDetailVal topoMono" title={id}>
+                      {alias ? `${alias} · ${shorten(id, 14, 8)}` : shorten(id, 16, 10)}
+                    </span>
+                    <button
+                      type="button"
+                      className="topoCopyBtn"
+                      title={t.copy}
+                      onClick={() => {
+                        copyToClipboard(id)
+                        setChannelCopiedOutpoint(`__node__${key}`)
+                        window.setTimeout(() => setChannelCopiedOutpoint(null), 1500)
+                      }}
+                    >
+                      {channelCopiedOutpoint === `__node__${key}` ? t.copied : t.copy}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+            <div className="topoDetailRow">
+              <span className="topoDetailKey">{t.edgeChannelCount}</span>
+              <span className="topoDetailVal">{selectedChannelEdge.channels.length}</span>
+            </div>
+            {selectedChannelEdge.channels.map((ch, idx) => {
+              const raw = graphChannelByOutpoint.get(ch.channelOutpoint)
+              const f1 = raw ? hexToNumberMaybe(raw.fee_rate_of_node1) : null
+              const f2 = raw ? hexToNumberMaybe(raw.fee_rate_of_node2) : null
+              return (
+                <div key={ch.channelOutpoint || String(idx)} className="topoChannelBlock">
+                  <div className="topoDetailKey" style={{ marginBottom: 6 }}>
+                    #{idx + 1}
+                  </div>
+                  <div className="topoDetailRow">
+                    <span className="topoDetailKey">{t.channelOutpoint}</span>
+                    <div className="topoDetailValRow">
+                      <span className="topoDetailVal topoMono" title={ch.channelOutpoint || '—'}>
+                        {ch.channelOutpoint ? shorten(ch.channelOutpoint, 18, 12) : '—'}
+                      </span>
+                      {ch.channelOutpoint ? (
+                        <button
+                          type="button"
+                          className="topoCopyBtn"
+                          title={t.copy}
+                          onClick={() => {
+                            copyToClipboard(ch.channelOutpoint)
+                            setChannelCopiedOutpoint(ch.channelOutpoint)
+                            window.setTimeout(() => setChannelCopiedOutpoint(null), 1500)
+                          }}
+                        >
+                          {channelCopiedOutpoint === ch.channelOutpoint ? t.copied : t.copy}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="topoDetailRow">
+                    <span className="topoDetailKey">{t.assetType}</span>
+                    <span className="topoDetailVal">{ch.isUdt ? `UDT` : `CKB`}</span>
+                  </div>
+                  <div className="topoDetailRow">
+                    <span className="topoDetailKey">{ch.isUdt ? t.udtCap : t.ckbCap}</span>
+                    <span className="topoDetailVal">{formatCapacity(ch.capacity)}</span>
+                  </div>
+                  <div className="topoDetailRow">
+                    <span className="topoDetailKey">{t.feeRateAvg}</span>
+                    <span className="topoDetailVal">{ch.feeRate}</span>
+                  </div>
+                  {(f1 !== null || f2 !== null) ? (
+                    <>
+                      <div className="topoDetailRow">
+                        <span className="topoDetailKey">{t.feeRateNode1}</span>
+                        <span className="topoDetailVal">{f1 ?? '—'}</span>
+                      </div>
+                      <div className="topoDetailRow">
+                        <span className="topoDetailKey">{t.feeRateNode2}</span>
+                        <span className="topoDetailVal">{f2 ?? '—'}</span>
+                      </div>
+                    </>
+                  ) : null}
+                  {ch.isUdt && ch.udtTypeScript && Object.keys(ch.udtTypeScript).length > 0 ? (
+                    <div className="topoDetailRow">
+                      <span className="topoDetailKey">{t.udtTypeScript}</span>
+                      <pre className="topoMono topoDetailVal" style={{ fontSize: 10, margin: 0, whiteSpace: 'pre-wrap' }}>
+                        {formatJson(ch.udtTypeScript)}
+                      </pre>
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {selectedTopoNode && !selectedChannelEdge && (
         <div className="topoDetailPanel">
           <div className="topoDetailHeader">
             <span>{t.nodeDetail}</span>
-            <button className="topoDetailClose" onClick={() => setSelectedTopoNode(null)}>✕</button>
+            <button type="button" className="topoDetailClose" onClick={() => setSelectedTopoNode(null)}>✕</button>
           </div>
           <div className="topoDetailBody">
             <div className="topoDetailRow">

@@ -319,3 +319,9 @@
   gap: 4px;
   white-space: nowrap;
 }
+
+.topoChannelBlock {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  margin-top: 8px;
+}
