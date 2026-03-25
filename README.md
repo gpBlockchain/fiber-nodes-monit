@@ -5,6 +5,7 @@
 
 ## 功能概览
 
+- 界面语言：左侧边栏可切换**中文 / English**，偏好保存在浏览器 `localStorage`（键名 `fiber-nodes-monits:lang`）。
 - 节点管理：
   - 单个添加 / 删除监控节点：为每个节点配置 RPC URL 与可选 Bearer token
   - 支持批量导入节点列表（适配约 300 个节点场景）
@@ -24,6 +25,9 @@
   - 输入 Payment Hash 后，自动对所有节点的 list_channels.pending_tlcs 进行扫描
   - 使用并发（默认 10）逐节点拉取 channels，展示扫描进度条
   - 表格中展示匹配 TLC 所在节点、channel、方向、金额、过期时间、TLC 状态、转发信息等
+- Channel Outpoint 视图：
+  - 输入 Channel Outpoint（_tx_hash:index_ 形式或片段），对所有节点执行 `list_channels`（`include_closed: true`）并匹配 `channel_outpoint`（**支持部分匹配**）
+  - 并发与进度条行为与 Payment Hash 扫描一致（默认并发 10）
 - RPC 调试视图：
   - 选择一个节点后，可手动输入任意 Fiber JSON-RPC 方法名与 JSON 形式的 params，通过统一代理直接发起调用
   - **快捷调用**：提供常用方法的一键模板填充，包括：
@@ -37,6 +41,11 @@
   - 支持按全部 / 仅 CKB / 仅 UDT 筛选通道；可搜索节点、查找两节点间路径
   - **点击节点**：右侧打开节点详情（公钥、别名、地址、容量与费率统计等）
   - **点击两节点之间的连线**：右侧打开**通道详情**；边上若合并了多条通道（虚线），会逐条列出 `channel_outpoint`、容量、费率（含 graph 中的节点1/节点2 费率）、UDT type script 等，并支持复制 outpoint 与端点公钥
+- Commitment Lock（链上 commitment 追踪）：
+  - 面向 CKB 链上 Fiber **LN commitment** 相关交易：可选择 testnet / mainnet / 自定义 RPC 与 commitment **code hash**，输入交易哈希后拉取并解析 lock / witness，并展示链上步骤追踪（实现见 `src/lib/ckb.ts`）
+  - 请求经同一 `/api/rpc` 代理发往 **CKB JSON-RPC** 端点（与 Fiber 节点 URL 无关）
+- Node Control（节点控制台）：
+  - 需在左侧选中一个监控节点；提供分标签页的快捷表单，覆盖常见操作：`connect_peer`、`open_channel`、`new_invoice`、`send_payment`、`get_payment`、`get_invoice`、`shutdown_channel` 等（底层仍为 Fiber JSON-RPC）
 - 自动刷新与手动刷新：
   - 当前选中节点详情每 15 秒自动刷新
   - 顶部工具栏提供「刷新当前节点」按钮，随时强制拉取最新详情
@@ -54,14 +63,15 @@
 ## 目录结构
 
 ```text
-fiber-nodes-monits/
+fiber-nodes-monit/   （npm package 名：fiber-nodes-monits）
 ├─ server/
 │  ├─ dev.ts          # 开发环境入口（npm run dev）
 │  ├─ prod.ts         # 生产环境入口（npm start）
-│  └─ rpcProxy.ts     # JSON-RPC 代理：/api/rpc → 节点 RPC
+│  └─ rpcProxy.ts     # JSON-RPC 代理：/api/rpc → 任意 HTTP(S) JSON-RPC（Fiber 或 CKB）
 ├─ src/
-│  ├─ App.tsx         # 主页面和 UI 逻辑
+│  ├─ App.tsx         # 主页面和 UI 逻辑（含 CommitmentTraceView 内联组件）
 │  ├─ App.css         # 页面样式
+│  ├─ index.css       # 全局样式与变量
 │  ├─ components/
 │  │  ├─ NetworkTopology.tsx   # 网络拓扑（D3 + graph_*）
 │  │  └─ NetworkTopology.css
@@ -83,10 +93,10 @@ fiber-nodes-monits/
 - Node.js ≥ 18（保证原生 fetch 支持）
 - 已安装 npm
 
-克隆好主仓库后，在项目根目录执行：
+克隆本仓库后，在**仓库根目录**执行：
 
 ```bash
-cd fiber/fiber-nodes-monits
+cd fiber-nodes-monit
 npm install
 npm run dev
 ```
@@ -127,8 +137,8 @@ npm run preview
 
 ## 与 Fiber 节点的交互
 
-前端通过 `/api/rpc` 调用后端代理，代理再以 JSON-RPC 2.0 请求转发到具体的 Fiber 节点 RPC 地址。
-当前使用到的 RPC 方法包括：
+前端通过 `/api/rpc` 调用后端代理，代理再以 JSON-RPC 2.0 请求转发到请求体里指定的 `url`（通常为 Fiber 节点；Commitment Lock 视图中为 CKB 节点）。
+当前与 Fiber 监控相关的方法主要包括：
 
 - `node_info`
 - `list_peers`
@@ -136,6 +146,10 @@ npm run preview
 - `graph_nodes` / `graph_channels`：
   - 单节点详情中的概览区块：通常 `limit: 0x14`（20 条）
   - **网络拓扑**视图：对二者分页拉取（例如每批 `0x64`），直到 `last_cursor` 为空，以绘制全图
+
+Node Control 等视图还会按需调用其他 Fiber JSON-RPC（如 `connect_peer`、`open_channel`、`send_payment` 等）。
+
+Commitment Lock 会通过 `src/lib/ckb.ts` 调用 CKB 链 RPC（如 `get_transaction` 及追踪所需的辅助调用），具体方法以实现为准。
 
 代理会根据前端传入的配置构造请求：
 
