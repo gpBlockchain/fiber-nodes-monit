@@ -21,6 +21,8 @@ function getString(obj: JsonObj, key: string): string | null {
 
 type TopoNode = {
   id: string
+  /** Fiber `graph_nodes` 的 node_name（RPC） */
+  nodeName: string
   alias: string
   addresses: string[]
   isPublic: boolean
@@ -158,6 +160,7 @@ const i18n = {
     yes: '是',
     no: '否',
     alias: '名称',
+    nodeName: '节点名称',
     addresses: '地址列表',
     connectedChannels: '连接通道数',
     ckbCap: 'CKB 容量',
@@ -222,6 +225,7 @@ const i18n = {
     yes: 'Yes',
     no: 'No',
     alias: 'Alias',
+    nodeName: 'Node name',
     addresses: 'Addresses',
     connectedChannels: 'Connected Channels',
     ckbCap: 'CKB Capacity',
@@ -290,6 +294,27 @@ function sameUndirectedEdge(a: D3Link, sid: string, tid: string): boolean {
 
 function tsToMs(ts: number): number {
   return ts < 1e12 ? ts * 1000 : ts
+}
+
+/** 图上与端点摘要：优先 node_name，其次 alias，否则缩短公钥 */
+function topoNodePrimaryLabel(n: Pick<TopoNode, 'id' | 'nodeName' | 'alias'>): string {
+  if (n.nodeName) return n.nodeName
+  if (n.alias) return n.alias
+  return shorten(n.id, 10, 6)
+}
+
+function truncateTopoVisibleLabel(s: string, maxChars: number): string {
+  if (s.length <= maxChars) return s
+  return `${s.slice(0, Math.max(1, maxChars - 1))}…`
+}
+
+/** SVG 原生 tooltip：node_name、（若有）alias、完整公钥 */
+function topoNodeSvgTitle(n: TopoNode): string {
+  const lines: string[] = []
+  if (n.nodeName) lines.push(n.nodeName)
+  if (n.alias && n.alias !== n.nodeName) lines.push(n.alias)
+  lines.push(n.id)
+  return lines.join('\n')
 }
 
 export default function NetworkTopology({
@@ -384,6 +409,7 @@ export default function NetworkTopology({
     for (const gn of graphNodes) {
       const nodeId = getString(gn, 'node_id') ?? ''
       if (!nodeId) continue
+      const nodeName = getString(gn, 'node_name') ?? ''
       const alias = getString(gn, 'alias') ?? ''
       const addresses = Array.isArray(gn.addresses) ? (gn.addresses as string[]) : []
       const ts = hexToNumberMaybe(gn.timestamp) ?? 0
@@ -392,6 +418,7 @@ export default function NetworkTopology({
       const udtCfgInfos = Array.isArray(gn.udt_cfg_infos) ? (gn.udt_cfg_infos as JsonObj[]) : []
       nodeMap.set(nodeId, {
         id: nodeId,
+        nodeName,
         alias,
         addresses,
         isPublic: true,
@@ -422,14 +449,14 @@ export default function NetworkTopology({
 
       if (!nodeMap.has(node1)) {
         nodeMap.set(node1, {
-          id: node1, alias: '', addresses: [], isPublic: false,
+          id: node1, nodeName: '', alias: '', addresses: [], isPublic: false,
           timestamp: 0, chainHash: '', autoAcceptMinCkbFundingAmount: 0,
           udtCfgInfos: [], channels: [], ckbCapacity: 0, udtCapacity: 0, avgFeeRate: 0,
         })
       }
       if (!nodeMap.has(node2)) {
         nodeMap.set(node2, {
-          id: node2, alias: '', addresses: [], isPublic: false,
+          id: node2, nodeName: '', alias: '', addresses: [], isPublic: false,
           timestamp: 0, chainHash: '', autoAcceptMinCkbFundingAmount: 0,
           udtCfgInfos: [], channels: [], ckbCapacity: 0, udtCapacity: 0, avgFeeRate: 0,
         })
@@ -665,8 +692,21 @@ export default function NetworkTopology({
       .attr('font-size', '10px')
       .style('pointer-events', 'none')
 
+    nodeSel.append('text')
+      .attr('class', 'topo-node-label')
+      .attr('text-anchor', 'middle')
+      .attr('dy', d => nodeRadius(d.channels.length) + 12)
+      .attr('font-size', '10px')
+      .text(d => truncateTopoVisibleLabel(topoNodePrimaryLabel(d), 18))
+
     nodeSel.append('title')
-      .text(d => d.alias || shorten(d.id, 12, 8))
+      .text(d => topoNodeSvgTitle(d))
+
+    nodeSel.append('circle')
+      .attr('class', 'topo-node-hit')
+      .attr('r', d => nodeRadius(d.channels.length) + 36)
+      .attr('fill', 'transparent')
+      .attr('stroke', 'none')
 
     const drag = d3.drag<SVGGElement, D3Node>()
       .on('start', (event: d3.D3DragEvent<SVGGElement, D3Node, D3Node>, d: D3Node) => {
@@ -685,6 +725,20 @@ export default function NetworkTopology({
       })
 
     nodeSel.call(drag)
+
+    nodeSel
+      .on('mouseenter', function (_event: MouseEvent, d: D3Node) {
+        d3.select(this)
+          .select('.topo-node-label')
+          .style('opacity', 1)
+          .text(truncateTopoVisibleLabel(topoNodePrimaryLabel(d), 56))
+      })
+      .on('mouseleave', function (_event: MouseEvent, d: D3Node) {
+        d3.select(this)
+          .select('.topo-node-label')
+          .style('opacity', 0)
+          .text(truncateTopoVisibleLabel(topoNodePrimaryLabel(d), 18))
+      })
 
     nodeSel.on('click', (_event: MouseEvent, d: D3Node) => {
       setSelectedChannelEdge(null)
@@ -1110,13 +1164,15 @@ export default function NetworkTopology({
             {(['sourceId', 'targetId'] as const).map((key, idx) => {
               const id = selectedChannelEdge[key]
               const label = idx === 0 ? t.endpointA : t.endpointB
-              const alias = topoNodes.find(n => n.id === id)?.alias ?? ''
+              const tn = topoNodes.find(n => n.id === id)
+              const hasReadableName = Boolean(tn?.nodeName || tn?.alias)
+              const disp = tn ? topoNodePrimaryLabel(tn) : ''
               return (
                 <div key={key} className="topoDetailRow">
                   <span className="topoDetailKey">{label}</span>
                   <div className="topoDetailValRow">
                     <span className="topoDetailVal topoMono" title={id}>
-                      {alias ? `${alias} · ${shorten(id, 14, 8)}` : shorten(id, 16, 10)}
+                      {hasReadableName ? `${disp} · ${shorten(id, 14, 8)}` : shorten(id, 16, 10)}
                     </span>
                     <button
                       type="button"
@@ -1238,6 +1294,10 @@ export default function NetworkTopology({
             <div className="topoDetailRow">
               <span className="topoDetailKey">{t.isPublic}</span>
               <span className="topoDetailVal">{selectedTopoNode.isPublic ? `✅ ${t.yes}` : `❌ ${t.no}`}</span>
+            </div>
+            <div className="topoDetailRow">
+              <span className="topoDetailKey">{t.nodeName}</span>
+              <span className="topoDetailVal">{selectedTopoNode.nodeName || '—'}</span>
             </div>
             <div className="topoDetailRow">
               <span className="topoDetailKey">{t.alias}</span>

@@ -188,6 +188,23 @@
   transition: opacity 120ms ease;
 }
 
+.topo-node-label {
+  font-weight: 600;
+  fill: var(--ink);
+  paint-order: stroke fill;
+  stroke: rgba(7, 10, 15, 0.92);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  transition: opacity 100ms ease;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 放大悬停命中区（覆盖节点下方名称文字），避免移入文字时误以为离开节点 */
+.topo-node-hit {
+  pointer-events: all;
+}
+
 .topoLoading {
   position: absolute;
   inset: 0;
