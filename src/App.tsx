@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import { copyToClipboard } from './lib/clipboard'
 import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from './lib/format'
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
@@ -304,33 +305,6 @@ async function fetchNodeDetails(node: MonitoredNode): Promise<NodeDetails> {
       channels: (graphChannels?.channels ?? []).map(asObj),
       last_cursor: graphChannels?.last_cursor,
     },
-  }
-}
-
-function copyToClipboard(text: string) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).catch((err) => {
-      console.error('Clipboard write failed, trying fallback:', err)
-      fallbackCopy(text)
-    })
-  } else {
-    fallbackCopy(text)
-  }
-}
-
-function fallbackCopy(text: string) {
-  try {
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textarea)
-  } catch (err) {
-    console.error('Fallback copy failed:', err)
-    alert('Copy failed')
   }
 }
 
