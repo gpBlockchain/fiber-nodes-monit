@@ -176,6 +176,18 @@
   display: block;
 }
 
+/* 拓扑连线上的 CKB / UDT 容量标签 */
+.topo-link-label {
+  font-size: 10px;
+  font-weight: 600;
+  fill: var(--ink);
+  paint-order: stroke fill;
+  stroke: rgba(7, 10, 15, 0.92);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  transition: opacity 120ms ease;
+}
+
 .topoLoading {
   position: absolute;
   inset: 0;
