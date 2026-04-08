@@ -56,7 +56,7 @@ const RPC_QUICK_PRESETS: { method: string; label: string; params: string }[] = [
   { method: 'new_invoice', label: 'new_invoice', params: JSON.stringify({ amount: '0x5f5e100', currency: 'Fibt', description: '', expiry: '0xe10', final_expiry_delta: '0x5265c00', payment_preimage: '0x', hash_algorithm: 'sha256' }, null, 2) },
   { method: 'parse_invoice', label: 'parse_invoice', params: JSON.stringify({ invoice: '' }, null, 2) },
   { method: 'get_payment', label: 'get_payment', params: JSON.stringify({ payment_hash: '0x' }, null, 2) },
-  { method: 'open_channel', label: 'open_channel', params: JSON.stringify({ peer_id: '', funding_amount: '0x2540be400', public: true }, null, 2) },
+  { method: 'open_channel', label: 'open_channel', params: JSON.stringify({ pubkey: '', funding_amount: '0x2540be400', public: true }, null, 2) },
   { method: 'shutdown_channel', label: 'shutdown_channel', params: JSON.stringify({ channel_id: '0x', close_script: { code_hash: '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8', hash_type: 'type', args: '' }, fee_rate: '0x3FC' }, null, 2) },
 ]
 
@@ -179,7 +179,7 @@ type ChannelOutpointSearchMatch = {
   channelId: string
   channelStateLabel: string
   channelOutpoint: string
-  peerId: string
+  pubkey: string
   isPublic: boolean
   localBalance: string
   remoteBalance: string
@@ -382,7 +382,7 @@ function App() {
   const [ncResultOp, setNcResultOp] = useState('')
   const [ncConnectAddr, setNcConnectAddr] = useState('')
   const [ncConnectSave, setNcConnectSave] = useState(true)
-  const [ncOpenPeerId, setNcOpenPeerId] = useState('')
+  const [ncOpenPubkey, setNcOpenPubkey] = useState('')
   const [ncOpenAmount, setNcOpenAmount] = useState('0x2540be400')
   const [ncOpenPublic, setNcOpenPublic] = useState(true)
   const [ncInvoiceAmount, setNcInvoiceAmount] = useState('0x5f5e100')
@@ -476,11 +476,11 @@ function App() {
 
   const selectedSummary = selectedNode ? summaries[selectedNode.id] : undefined
 
-  const onlinePeerIds = useMemo(() => {
+  const onlinePubkeys = useMemo(() => {
     const ids = new Set<string>()
     if (details?.peers) {
       for (const p of details.peers) {
-        const id = getString(p, 'peer_id')
+        const id = getString(p, 'pubkey')
         if (id) ids.add(id)
       }
     }
@@ -1043,7 +1043,7 @@ function App() {
             const channelIdShort =
               typeof channelIdRaw === 'string' ? shorten(channelIdRaw, 10, 8) : '—'
             const channelStateLabel = formatJson(chObj.state ?? '—')
-            const peerId = String(chObj.peer_id ?? '—')
+            const pubkey = String(chObj.pubkey ?? '—')
             const isPublic = chObj.is_public === true
             const localBalance = formatAmountWithHex(chObj.local_balance)
             const remoteBalance = formatAmountWithHex(chObj.remote_balance)
@@ -1058,7 +1058,7 @@ function App() {
               channelId,
               channelStateLabel,
               channelOutpoint: outpointStr,
-              peerId,
+              pubkey,
               isPublic,
               localBalance,
               remoteBalance,
@@ -1144,7 +1144,7 @@ function App() {
           break
         case 'open_channel':
           method = 'open_channel'
-          params = { peer_id: ncOpenPeerId.trim(), funding_amount: ncOpenAmount.trim(), public: ncOpenPublic }
+          params = { pubkey: ncOpenPubkey.trim(), funding_amount: ncOpenAmount.trim(), public: ncOpenPublic }
           break
         case 'new_invoice':
           method = 'new_invoice'
@@ -1186,7 +1186,7 @@ function App() {
       setNcResult(err instanceof Error ? err.message : String(err))
       setNcResultObj(null)
     }
-  }, [selectedNode, ncActiveOp, ncConnectAddr, ncConnectSave, ncOpenPeerId, ncOpenAmount, ncOpenPublic, ncInvoiceAmount, ncInvoiceCurrency, ncInvoiceDesc, ncInvoiceHashAlgo, ncPayInvoice, ncPayKeysend, ncPayTarget, ncPayAmount, ncShutdownChannelId, ncShutdownForce, ncGetPaymentHash, ncGetInvoiceHash])
+  }, [selectedNode, ncActiveOp, ncConnectAddr, ncConnectSave, ncOpenPubkey, ncOpenAmount, ncOpenPublic, ncInvoiceAmount, ncInvoiceCurrency, ncInvoiceDesc, ncInvoiceHashAlgo, ncPayInvoice, ncPayKeysend, ncPayTarget, ncPayAmount, ncShutdownChannelId, ncShutdownForce, ncGetPaymentHash, ncGetInvoiceHash])
 
   return (
     <I18nContext.Provider value={t}>
@@ -1770,7 +1770,6 @@ function App() {
                 <table className="table">
                   <thead>
                     <tr>
-                      <th>peer_id</th>
                       <th>pubkey</th>
                       <th>address</th>
                     </tr>
@@ -1778,15 +1777,14 @@ function App() {
                   <tbody>
                     {details?.peers?.length ? (
                       details.peers.map((p, idx) => (
-                        <tr key={`${p?.peer_id ?? idx}-${idx}`}>
-                          <td className="monoSmall">{String(p?.peer_id ?? '—')}</td>
+                        <tr key={`${p?.pubkey ?? idx}-${idx}`}>
                           <td className="monoSmall">{typeof p?.pubkey === 'string' ? shorten(p.pubkey, 14, 10) : formatJson(p?.pubkey ?? '—')}</td>
                           <td className="monoSmall">{String(p?.address ?? '—')}</td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={3} className="muted" style={{ padding: 14 }}>
+                        <td colSpan={2} className="muted" style={{ padding: 14 }}>
                           {selectedNode ? t.noPeers : '—'}
                         </td>
                       </tr>
@@ -1911,7 +1909,7 @@ function App() {
                     <th style={{ width: 20 }}></th>
                     <th>channel_id</th>
                     <th>public</th>
-                    <th>peer_id</th>
+                    <th>pubkey</th>
                     <th>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <span>state</span>
@@ -1964,13 +1962,13 @@ function App() {
                             <td className="monoSmall">{isPublic ? 'yes' : 'no'}</td>
                             <td className="monoSmall">
                               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span>{String(info.peer_id ?? '—')}</span>
-                                {typeof info.peer_id === 'string' && (
+                                <span>{String(info.pubkey ?? '—')}</span>
+                                {typeof info.pubkey === 'string' && (
                                   <span
-                                    className={`pill ${onlinePeerIds.has(info.peer_id) ? 'pillOk' : 'dim'}`}
+                                    className={`pill ${onlinePubkeys.has(info.pubkey) ? 'pillOk' : 'dim'}`}
                                     style={{ fontSize: 9, padding: '1px 4px', height: 'auto' }}
                                   >
-                                    {onlinePeerIds.has(info.peer_id) ? 'Online' : 'Offline'}
+                                    {onlinePubkeys.has(info.pubkey) ? 'Online' : 'Offline'}
                                   </span>
                                 )}
                               </div>
@@ -2483,7 +2481,7 @@ function App() {
                           <th>Channel ID</th>
                           <th>Channel Outpoint</th>
                           <th>State</th>
-                          <th>Peer ID</th>
+                          <th>Pubkey</th>
                           <th>Public</th>
                           <th>Local Balance</th>
                           <th>Remote Balance</th>
@@ -2506,7 +2504,7 @@ function App() {
                               {shorten(row.channelOutpoint, 20, 16)}
                             </td>
                             <td className="monoSmall">{row.channelStateLabel}</td>
-                            <td className="monoSmall">{shorten(row.peerId, 14, 10)}</td>
+                            <td className="monoSmall">{shorten(row.pubkey, 14, 10)}</td>
                             <td>{row.isPublic ? 'yes' : 'no'}</td>
                             <td className="monoSmall">{row.localBalance}</td>
                             <td className="monoSmall">{row.remoteBalance}</td>
@@ -2841,7 +2839,7 @@ function App() {
                               className="input"
                               value={ncConnectAddr}
                               onChange={(e) => setNcConnectAddr(e.target.value)}
-                              placeholder="/ip4/127.0.0.1/tcp/8228/p2p/QmNodePeerId..."
+                              placeholder="/ip4/127.0.0.1/tcp/8228/p2p/..."
                             />
                           </div>
                           <label className="ncCheckLabel">
@@ -2858,12 +2856,12 @@ function App() {
                           </div>
                           <div className="ncFormDesc">{t.openChannelDesc}</div>
                           <div className="field">
-                            <div className="label">Peer ID</div>
+                            <div className="label">Pubkey</div>
                             <input
                               className="input"
-                              value={ncOpenPeerId}
-                              onChange={(e) => setNcOpenPeerId(e.target.value)}
-                              placeholder="QmPeerId..."
+                              value={ncOpenPubkey}
+                              onChange={(e) => setNcOpenPubkey(e.target.value)}
+                              placeholder="02abc..."
                             />
                           </div>
                           <div className="field">
