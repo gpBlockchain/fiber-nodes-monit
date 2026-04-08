@@ -407,7 +407,7 @@ export default function NetworkTopology({
   const { topoNodes, topoLinks, stats } = useMemo(() => {
     const nodeMap = new Map<string, TopoNode>()
     for (const gn of graphNodes) {
-      const nodeId = getString(gn, 'node_id') ?? ''
+      const nodeId = getString(gn, 'pubkey') ?? ''
       if (!nodeId) continue
       const nodeName = getString(gn, 'node_name') ?? ''
       const alias = getString(gn, 'alias') ?? ''
