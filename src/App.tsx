@@ -1500,7 +1500,7 @@ function App() {
                   <tbody>
                     {overviewRows.map(({ node, summary, peersCount, channelsCount }) => {
                       const chainHash = getString(asObj(summary?.nodeInfo), 'chain_hash')
-                      const nodeId = getString(asObj(summary?.nodeInfo), 'node_id')
+                      const nodeId = getString(asObj(summary?.nodeInfo), 'pubkey')
                       return (
                         <tr key={node.id}>
                           <td>
@@ -1623,8 +1623,8 @@ function App() {
                     <div className="v">{getString(details.nodeInfo, 'version') ?? '—'}</div>
                     <div className="k">commit_hash</div>
                     <div className="v">{getString(details.nodeInfo, 'commit_hash') ? shorten(getString(details.nodeInfo, 'commit_hash')!, 16, 10) : '—'}</div>
-                    <div className="k">node_id</div>
-                    <div className="v">{getString(details.nodeInfo, 'node_id') ? shorten(getString(details.nodeInfo, 'node_id')!, 16, 12) : formatJson(details.nodeInfo['node_id'] ?? '—')}</div>
+                    <div className="k">pubkey</div>
+                    <div className="v">{getString(details.nodeInfo, 'pubkey') ? shorten(getString(details.nodeInfo, 'pubkey')!, 16, 12) : formatJson(details.nodeInfo['pubkey'] ?? '—')}</div>
                     <div className="k">node_name</div>
                     <div className="v">{getString(details.nodeInfo, 'node_name') ?? '—'}</div>
                     <div className="k">chain_hash</div>
@@ -1916,7 +1916,7 @@ function App() {
                   <table className="table">
                     <thead>
                       <tr>
-                        <th>node_id</th>
+                        <th>pubkey</th>
                         <th>node_name</th>
                         <th>version</th>
                         <th>addresses</th>
@@ -1927,7 +1927,7 @@ function App() {
                     <tbody>
                       {(graphNodesPages[graphNodesCurrentPageIndex]?.nodes ?? []).length > 0 ? (
                         (graphNodesPages[graphNodesCurrentPageIndex]?.nodes ?? []).map((n, idx) => {
-                          const nodeId = getString(n, 'node_id')
+                          const nodeId = getString(n, 'pubkey')
                           const nodeName = getString(n, 'node_name')
                           const version = getString(n, 'version')
                           const addrs = getArray(n, 'addresses')
@@ -2960,10 +2960,10 @@ function App() {
                         <div className="kvGrid" style={{ fontSize: 11 }}>
                           <div className="k">node_name</div>
                           <div className="v">{getString(ncNodeInfo, 'node_name') ?? '—'}</div>
-                          <div className="k">node_id</div>
+                          <div className="k">pubkey</div>
                           <div className="v" style={{ wordBreak: 'break-all' }}>
                             {(() => {
-                              const nid = getString(ncNodeInfo, 'node_id')
+                              const nid = getString(ncNodeInfo, 'pubkey')
                               if (!nid) return '—'
                               return (
                                 <span
