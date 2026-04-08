@@ -56,8 +56,12 @@ const RPC_QUICK_PRESETS: { method: string; label: string; params: string }[] = [
   { method: 'new_invoice', label: 'new_invoice', params: JSON.stringify({ amount: '0x5f5e100', currency: 'Fibt', description: '', expiry: '0xe10', final_expiry_delta: '0x5265c00', payment_preimage: '0x', hash_algorithm: 'sha256' }, null, 2) },
   { method: 'parse_invoice', label: 'parse_invoice', params: JSON.stringify({ invoice: '' }, null, 2) },
   { method: 'get_payment', label: 'get_payment', params: JSON.stringify({ payment_hash: '0x' }, null, 2) },
-  { method: 'open_channel', label: 'open_channel', params: JSON.stringify({ peer_id: '', funding_amount: '0x2540be400', public: true }, null, 2) },
+  { method: 'open_channel', label: 'open_channel', params: JSON.stringify({ pubkey: '', funding_amount: '0x2540be400', public: true }, null, 2) },
   { method: 'shutdown_channel', label: 'shutdown_channel', params: JSON.stringify({ channel_id: '0x', close_script: { code_hash: '0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8', hash_type: 'type', args: '' }, fee_rate: '0x3FC' }, null, 2) },
+  { method: 'list_channels', label: 'list_channels', params: JSON.stringify({ include_closed: true }, null, 2) },
+  { method: 'list_channels', label: 'list_channels (only_pending)', params: JSON.stringify({ only_pending: true }, null, 2) },
+  { method: 'list_payments', label: 'list_payments', params: JSON.stringify({}, null, 2) },
+  { method: 'list_payments', label: 'list_payments (by status)', params: JSON.stringify({ status: 'Success', limit: '0xf' }, null, 2) },
 ]
 
 function formatAmountWithHex(value: unknown): string {
@@ -179,7 +183,7 @@ type ChannelOutpointSearchMatch = {
   channelId: string
   channelStateLabel: string
   channelOutpoint: string
-  peerId: string
+  pubkey: string
   isPublic: boolean
   localBalance: string
   remoteBalance: string
@@ -283,11 +287,12 @@ async function fetchNodeSummary(node: MonitoredNode): Promise<NodeSummary> {
   }
 }
 
-async function fetchNodeDetails(node: MonitoredNode): Promise<NodeDetails> {
+async function fetchNodeDetails(node: MonitoredNode, opts?: { onlyPending?: boolean }): Promise<NodeDetails> {
+  const channelParams = opts?.onlyPending ? { only_pending: true } : { include_closed: true }
   const [nodeInfo, peersRes, channelsRes, graphNodes, graphChannels] = await Promise.all([
     callFiberRpc<JsonObj>(node, 'node_info'),
     callFiberRpc<{ peers: unknown[] }>(node, 'list_peers'),
-    callFiberRpc<{ channels: unknown[] }>(node, 'list_channels', { include_closed: true }),
+    callFiberRpc<{ channels: unknown[] }>(node, 'list_channels', channelParams),
     callFiberRpc<{ nodes: unknown[]; last_cursor?: unknown }>(node, 'graph_nodes', { limit: "0x14" }),
     callFiberRpc<{ channels: unknown[]; last_cursor?: unknown }>(node, 'graph_channels', { limit: "0x14" }),
   ])
@@ -382,7 +387,7 @@ function App() {
   const [ncResultOp, setNcResultOp] = useState('')
   const [ncConnectAddr, setNcConnectAddr] = useState('')
   const [ncConnectSave, setNcConnectSave] = useState(true)
-  const [ncOpenPeerId, setNcOpenPeerId] = useState('')
+  const [ncOpenPubkey, setNcOpenPubkey] = useState('')
   const [ncOpenAmount, setNcOpenAmount] = useState('0x2540be400')
   const [ncOpenPublic, setNcOpenPublic] = useState(true)
   const [ncInvoiceAmount, setNcInvoiceAmount] = useState('0x5f5e100')
@@ -432,6 +437,14 @@ function App() {
   const [accountBalanceCustomRpcUrl, setAccountBalanceCustomRpcUrl] = useState('')
   const ACCOUNT_BALANCE_CELLS_LIMIT = 20
 
+  const [channelOnlyPending, setChannelOnlyPending] = useState(false)
+
+  const PAYMENTS_PAGE_SIZE = 15
+  const [paymentsPages, setPaymentsPages] = useState<Array<{ payments: JsonObj[]; last_cursor?: unknown }>>([])
+  const [paymentsCurrentPageIndex, setPaymentsCurrentPageIndex] = useState(0)
+  const [paymentsLoading, setPaymentsLoading] = useState(false)
+  const [paymentsStatusFilter, setPaymentsStatusFilter] = useState<string>('ALL')
+
   const toggleChannel = (id: string) => {
     setExpandedChannels((prev) => {
       const next = new Set(prev)
@@ -476,11 +489,11 @@ function App() {
 
   const selectedSummary = selectedNode ? summaries[selectedNode.id] : undefined
 
-  const onlinePeerIds = useMemo(() => {
+  const onlinePubkeys = useMemo(() => {
     const ids = new Set<string>()
     if (details?.peers) {
       for (const p of details.peers) {
-        const id = getString(p, 'peer_id')
+        const id = getString(p, 'pubkey')
         if (id) ids.add(id)
       }
     }
@@ -525,7 +538,7 @@ function App() {
     if (!selectedNode) return
     setDetailsState({ status: 'loading' })
     try {
-      const next = await fetchNodeDetails(selectedNode)
+      const next = await fetchNodeDetails(selectedNode, { onlyPending: channelOnlyPending })
       setDetails(next)
       setDetailsState({ status: 'ready' })
     } catch (err) {
@@ -535,7 +548,7 @@ function App() {
         error: err instanceof Error ? err.message : String(err),
       })
     }
-  }, [selectedNode])
+  }, [selectedNode, channelOnlyPending])
 
   const refreshAccountBalance = useCallback(async () => {
     if (!selectedNode || !details?.nodeInfo) return
@@ -712,6 +725,74 @@ function App() {
   const loadGraphChannelsPrevPage = useCallback(() => {
     setGraphChannelsCurrentPageIndex((prev) => Math.max(0, prev - 1))
   }, [])
+
+  const loadPaymentsRef = useRef<((reset?: boolean) => Promise<void>) | null>(null)
+
+  const loadPayments = useCallback(async (reset?: boolean) => {
+    if (!selectedNode) return
+    setPaymentsLoading(true)
+    try {
+      const params: Record<string, unknown> = {
+        limit: `0x${PAYMENTS_PAGE_SIZE.toString(16)}`,
+      }
+      if (paymentsStatusFilter !== 'ALL') {
+        params.status = paymentsStatusFilter
+      }
+      if (!reset && paymentsPages.length > 0) {
+        const lastPage = paymentsPages[paymentsPages.length - 1]
+        if (lastPage.last_cursor) {
+          params.after = lastPage.last_cursor
+        }
+      }
+      const res = await callFiberRpc<{ payments: unknown[]; last_cursor?: unknown }>(
+        selectedNode,
+        'list_payments',
+        params,
+      )
+      const page = {
+        payments: (res?.payments ?? []).map(asObj),
+        last_cursor: res?.last_cursor,
+      }
+      if (reset) {
+        setPaymentsPages([page])
+        setPaymentsCurrentPageIndex(0)
+      } else {
+        setPaymentsPages((prev) => [...prev, page])
+        setPaymentsCurrentPageIndex((prev) => prev + 1)
+      }
+    } catch {
+      // keep state unchanged on error
+    } finally {
+      setPaymentsLoading(false)
+    }
+  }, [selectedNode, paymentsPages, paymentsStatusFilter])
+
+  useEffect(() => {
+    loadPaymentsRef.current = loadPayments
+  }, [loadPayments])
+
+  const loadPaymentsPrevPage = useCallback(() => {
+    setPaymentsCurrentPageIndex((prev) => Math.max(0, prev - 1))
+  }, [])
+
+  const loadPaymentsNextPage = useCallback(async () => {
+    if (paymentsCurrentPageIndex < paymentsPages.length - 1) {
+      setPaymentsCurrentPageIndex((prev) => prev + 1)
+    } else {
+      await loadPayments(false)
+    }
+  }, [paymentsCurrentPageIndex, paymentsPages.length, loadPayments])
+
+  useEffect(() => {
+    if (selectedNode) {
+      setPaymentsPages([])
+      setPaymentsCurrentPageIndex(0)
+      void loadPaymentsRef.current?.(true)
+    } else {
+      setPaymentsPages([])
+      setPaymentsCurrentPageIndex(0)
+    }
+  }, [selectedNodeId, paymentsStatusFilter, selectedNode])
 
   useInterval(
     () => {
@@ -1043,7 +1124,7 @@ function App() {
             const channelIdShort =
               typeof channelIdRaw === 'string' ? shorten(channelIdRaw, 10, 8) : '—'
             const channelStateLabel = formatJson(chObj.state ?? '—')
-            const peerId = String(chObj.peer_id ?? '—')
+            const pubkey = String(chObj.pubkey ?? '—')
             const isPublic = chObj.is_public === true
             const localBalance = formatAmountWithHex(chObj.local_balance)
             const remoteBalance = formatAmountWithHex(chObj.remote_balance)
@@ -1058,7 +1139,7 @@ function App() {
               channelId,
               channelStateLabel,
               channelOutpoint: outpointStr,
-              peerId,
+              pubkey,
               isPublic,
               localBalance,
               remoteBalance,
@@ -1144,7 +1225,7 @@ function App() {
           break
         case 'open_channel':
           method = 'open_channel'
-          params = { peer_id: ncOpenPeerId.trim(), funding_amount: ncOpenAmount.trim(), public: ncOpenPublic }
+          params = { pubkey: ncOpenPubkey.trim(), funding_amount: ncOpenAmount.trim(), public: ncOpenPublic }
           break
         case 'new_invoice':
           method = 'new_invoice'
@@ -1186,7 +1267,7 @@ function App() {
       setNcResult(err instanceof Error ? err.message : String(err))
       setNcResultObj(null)
     }
-  }, [selectedNode, ncActiveOp, ncConnectAddr, ncConnectSave, ncOpenPeerId, ncOpenAmount, ncOpenPublic, ncInvoiceAmount, ncInvoiceCurrency, ncInvoiceDesc, ncInvoiceHashAlgo, ncPayInvoice, ncPayKeysend, ncPayTarget, ncPayAmount, ncShutdownChannelId, ncShutdownForce, ncGetPaymentHash, ncGetInvoiceHash])
+  }, [selectedNode, ncActiveOp, ncConnectAddr, ncConnectSave, ncOpenPubkey, ncOpenAmount, ncOpenPublic, ncInvoiceAmount, ncInvoiceCurrency, ncInvoiceDesc, ncInvoiceHashAlgo, ncPayInvoice, ncPayKeysend, ncPayTarget, ncPayAmount, ncShutdownChannelId, ncShutdownForce, ncGetPaymentHash, ncGetInvoiceHash])
 
   return (
     <I18nContext.Provider value={t}>
@@ -1770,7 +1851,6 @@ function App() {
                 <table className="table">
                   <thead>
                     <tr>
-                      <th>peer_id</th>
                       <th>pubkey</th>
                       <th>address</th>
                     </tr>
@@ -1778,15 +1858,14 @@ function App() {
                   <tbody>
                     {details?.peers?.length ? (
                       details.peers.map((p, idx) => (
-                        <tr key={`${p?.peer_id ?? idx}-${idx}`}>
-                          <td className="monoSmall">{String(p?.peer_id ?? '—')}</td>
+                        <tr key={`${p?.pubkey ?? idx}-${idx}`}>
                           <td className="monoSmall">{typeof p?.pubkey === 'string' ? shorten(p.pubkey, 14, 10) : formatJson(p?.pubkey ?? '—')}</td>
                           <td className="monoSmall">{String(p?.address ?? '—')}</td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={3} className="muted" style={{ padding: 14 }}>
+                        <td colSpan={2} className="muted" style={{ padding: 14 }}>
                           {selectedNode ? t.noPeers : '—'}
                         </td>
                       </tr>
@@ -1898,10 +1977,20 @@ function App() {
           <section className="card">
             <div className="cardHeader">
               <div className="cardTitle">Channels (list_channels)</div>
-              <div className="muted">
-                {details
-                  ? `${details.channels.length} channels · ${totalPendingTlcs} pending TLCs`
-                  : '—'}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={channelOnlyPending}
+                    onChange={(e) => setChannelOnlyPending(e.target.checked)}
+                  />
+                  <span>{t.onlyPendingChannels}</span>
+                </label>
+                <div className="muted">
+                  {details
+                    ? `${details.channels.length} channels · ${totalPendingTlcs} pending TLCs`
+                    : '—'}
+                </div>
               </div>
             </div>
             <div className="cardBody" style={{ padding: 0, maxHeight: 600, overflow: 'auto' }}>
@@ -1911,7 +2000,7 @@ function App() {
                     <th style={{ width: 20 }}></th>
                     <th>channel_id</th>
                     <th>public</th>
-                    <th>peer_id</th>
+                    <th>pubkey</th>
                     <th>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <span>state</span>
@@ -1964,13 +2053,13 @@ function App() {
                             <td className="monoSmall">{isPublic ? 'yes' : 'no'}</td>
                             <td className="monoSmall">
                               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span>{String(info.peer_id ?? '—')}</span>
-                                {typeof info.peer_id === 'string' && (
+                                <span>{String(info.pubkey ?? '—')}</span>
+                                {typeof info.pubkey === 'string' && (
                                   <span
-                                    className={`pill ${onlinePeerIds.has(info.peer_id) ? 'pillOk' : 'dim'}`}
+                                    className={`pill ${onlinePubkeys.has(info.pubkey) ? 'pillOk' : 'dim'}`}
                                     style={{ fontSize: 9, padding: '1px 4px', height: 'auto' }}
                                   >
-                                    {onlinePeerIds.has(info.peer_id) ? 'Online' : 'Offline'}
+                                    {onlinePubkeys.has(info.pubkey) ? 'Online' : 'Offline'}
                                   </span>
                                 )}
                               </div>
@@ -2251,6 +2340,122 @@ function App() {
               )}
             </div>
           </section>
+
+          <section className="card">
+            <div className="cardHeader" style={{ flexWrap: 'wrap', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="cardTitle">{t.paymentsTitle}</div>
+                <div className="muted">
+                  {paymentsPages.length > 0
+                    ? t.pageInfo(paymentsPages[paymentsCurrentPageIndex]?.payments?.length ?? 0, paymentsPages.length)
+                    : '—'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <select
+                  className="input"
+                  value={paymentsStatusFilter}
+                  onChange={(e) => setPaymentsStatusFilter(e.target.value)}
+                  style={{ padding: '4px 8px', fontSize: 11 }}
+                >
+                  <option value="ALL">{t.paymentsFilterAll}</option>
+                  <option value="Created">Created</option>
+                  <option value="Inflight">Inflight</option>
+                  <option value="Success">Success</option>
+                  <option value="Failed">Failed</option>
+                </select>
+                <button
+                  className="btn btnGhost"
+                  onClick={() => void loadPayments(true)}
+                  disabled={paymentsLoading || !selectedNode}
+                  style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
+                >
+                  {paymentsLoading ? t.paymentsLoading : t.refreshNode}
+                </button>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {t.pageLabel(paymentsCurrentPageIndex + 1, paymentsPages.length || 1)}
+                </span>
+                <button
+                  className="btn btnGhost"
+                  onClick={loadPaymentsPrevPage}
+                  disabled={paymentsCurrentPageIndex === 0}
+                  style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
+                >
+                  {t.prevPage}
+                </button>
+                <button
+                  className="btn btnGhost"
+                  onClick={() => void loadPaymentsNextPage()}
+                  disabled={
+                    paymentsLoading ||
+                    !selectedNode ||
+                    (paymentsCurrentPageIndex >= paymentsPages.length - 1 && !paymentsPages[paymentsCurrentPageIndex]?.last_cursor)
+                  }
+                  style={{ padding: '6px 12px', borderRadius: 10, minWidth: 64 }}
+                >
+                  {paymentsLoading ? t.paymentsLoading : t.nextPage}
+                </button>
+              </div>
+            </div>
+            <div className="cardBody" style={{ padding: 0, maxHeight: 480, overflow: 'auto' }}>
+              {selectedNode && paymentsPages.length > 0 ? (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>payment_hash</th>
+                      <th>status</th>
+                      <th>fee</th>
+                      <th>created_at</th>
+                      <th>last_updated_at</th>
+                      <th>error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(paymentsPages[paymentsCurrentPageIndex]?.payments ?? []).length > 0 ? (
+                      (paymentsPages[paymentsCurrentPageIndex]?.payments ?? []).map((p, idx) => {
+                        const paymentHash = getString(p, 'payment_hash')
+                        const status = typeof p.status === 'string' ? p.status : formatJson(p.status ?? '—')
+                        const fee = formatAmountWithHex(p.fee)
+                        const createdLabel = hexMillisToLocalTimeLabel(p.created_at)
+                        const updatedLabel = hexMillisToLocalTimeLabel(p.last_updated_at)
+                        const failedError = getString(p, 'failed_error')
+                        const statusClass =
+                          status === 'Success' ? 'pillOk'
+                            : status === 'Failed' ? 'pillBad'
+                              : ''
+                        return (
+                          <tr key={paymentHash ?? `pay-${idx}`}>
+                            <td className="monoSmall" title={paymentHash ?? ''}>
+                              {paymentHash ? shorten(paymentHash, 18, 10) : '—'}
+                            </td>
+                            <td>
+                              <span className={`pill ${statusClass}`}>{status}</span>
+                            </td>
+                            <td className="monoSmall">{fee}</td>
+                            <td className="monoSmall">{createdLabel}</td>
+                            <td className="monoSmall">{updatedLabel}</td>
+                            <td className="monoSmall" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {failedError ?? '—'}
+                            </td>
+                          </tr>
+                        )
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="muted" style={{ padding: 14 }}>
+                          {t.paymentsEmpty}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="muted" style={{ padding: 14 }}>
+                  {selectedNode ? t.paymentsEmpty : t.selectNodePayments}
+                </div>
+              )}
+            </div>
+          </section>
           </div>
         ) : null}
 
@@ -2483,7 +2688,7 @@ function App() {
                           <th>Channel ID</th>
                           <th>Channel Outpoint</th>
                           <th>State</th>
-                          <th>Peer ID</th>
+                          <th>Pubkey</th>
                           <th>Public</th>
                           <th>Local Balance</th>
                           <th>Remote Balance</th>
@@ -2506,7 +2711,7 @@ function App() {
                               {shorten(row.channelOutpoint, 20, 16)}
                             </td>
                             <td className="monoSmall">{row.channelStateLabel}</td>
-                            <td className="monoSmall">{shorten(row.peerId, 14, 10)}</td>
+                            <td className="monoSmall">{shorten(row.pubkey, 14, 10)}</td>
                             <td>{row.isPublic ? 'yes' : 'no'}</td>
                             <td className="monoSmall">{row.localBalance}</td>
                             <td className="monoSmall">{row.remoteBalance}</td>
@@ -2841,7 +3046,7 @@ function App() {
                               className="input"
                               value={ncConnectAddr}
                               onChange={(e) => setNcConnectAddr(e.target.value)}
-                              placeholder="/ip4/127.0.0.1/tcp/8228/p2p/QmNodePeerId..."
+                              placeholder="/ip4/127.0.0.1/tcp/8228/p2p/..."
                             />
                           </div>
                           <label className="ncCheckLabel">
@@ -2858,12 +3063,12 @@ function App() {
                           </div>
                           <div className="ncFormDesc">{t.openChannelDesc}</div>
                           <div className="field">
-                            <div className="label">Peer ID</div>
+                            <div className="label">Pubkey</div>
                             <input
                               className="input"
-                              value={ncOpenPeerId}
-                              onChange={(e) => setNcOpenPeerId(e.target.value)}
-                              placeholder="QmPeerId..."
+                              value={ncOpenPubkey}
+                              onChange={(e) => setNcOpenPubkey(e.target.value)}
+                              placeholder="02abc..."
                             />
                           </div>
                           <div className="field">

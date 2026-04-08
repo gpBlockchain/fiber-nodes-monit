@@ -183,6 +183,14 @@ const zh = {
   nodeInfoLabel: '节点信息',
   nodeInfoLoading: '正在获取节点信息…',
   nodeInfoError: '获取节点信息失败',
+  onlyPendingChannels: '仅显示 Pending',
+  paymentsTitle: 'Payments (list_payments)',
+  paymentsFilterAll: '全部',
+  paymentsLoadMore: '加载更多',
+  paymentsLoading: '加载中…',
+  paymentsEmpty: '暂无支付记录',
+  paymentsNoMore: '已加载全部',
+  selectNodePayments: '选择节点后可查看支付记录',
 }
 
 const en: typeof zh = {
@@ -352,6 +360,14 @@ const en: typeof zh = {
   nodeInfoLabel: 'Node Info',
   nodeInfoLoading: 'Fetching node info…',
   nodeInfoError: 'Failed to fetch node info',
+  onlyPendingChannels: 'Only Pending',
+  paymentsTitle: 'Payments (list_payments)',
+  paymentsFilterAll: 'All',
+  paymentsLoadMore: 'Load More',
+  paymentsLoading: 'Loading…',
+  paymentsEmpty: 'No payments',
+  paymentsNoMore: 'All loaded',
+  selectNodePayments: 'Select a node to view payments',
 }
 
 export type Translations = typeof zh
