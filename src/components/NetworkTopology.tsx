@@ -948,7 +948,7 @@ export default function NetworkTopology({
       .transition().duration(400).attr('stroke', (d: D3Link) => mergedLinkColor(d))
       .attr('stroke-width', (d: D3Link) => Math.min(Math.max(0.5, Math.sqrt(d.totalCapacity / 1e8) * 0.4), 3))
       .style('filter', 'none')
-  }, [topoNodes, topoLinks, t])
+  }, [t])
 
   const highlightPath = useCallback((pubkey1: string, pubkey2: string) => {
     if (!svgRef.current) return
