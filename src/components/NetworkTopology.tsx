@@ -147,6 +147,8 @@ const i18n = {
     filterUdt: '仅 UDT',
     searchPlaceholder: '输入节点公钥搜索…',
     search: '搜索',
+    outpointSearchPlaceholder: '输入 channel_outpoint 搜索…',
+    noChannelFound: '未找到该通道',
     pathSearchPlaceholder1: '起始节点公钥',
     pathSearchPlaceholder2: '目标节点公钥',
     findPath: '查找路径',
@@ -212,6 +214,8 @@ const i18n = {
     filterUdt: 'UDT Only',
     searchPlaceholder: 'Enter node pubkey to search…',
     search: 'Search',
+    outpointSearchPlaceholder: 'Enter channel_outpoint to search…',
+    noChannelFound: 'Channel not found',
     pathSearchPlaceholder1: 'Source node pubkey',
     pathSearchPlaceholder2: 'Target node pubkey',
     findPath: 'Find Path',
@@ -341,6 +345,7 @@ export default function NetworkTopology({
   } | null>(null)
   const [channelCopiedOutpoint, setChannelCopiedOutpoint] = useState<string | null>(null)
   const [singleSearch, setSingleSearch] = useState('')
+  const [outpointSearch, setOutpointSearch] = useState('')
   const [pathSearch1, setPathSearch1] = useState('')
   const [pathSearch2, setPathSearch2] = useState('')
   const [searchMsg, setSearchMsg] = useState('')
@@ -870,6 +875,81 @@ export default function NetworkTopology({
       .transition().duration(300).attr('stroke', 'rgba(124,255,214,0.3)').attr('stroke-width', 1)
   }, [topoNodes, t])
 
+  const highlightChannel = useCallback((query: string) => {
+    if (!svgRef.current) return
+    const svgEl = d3.select(svgRef.current)
+    const datum = svgEl.datum() as {
+      g: d3.Selection<SVGGElement, unknown, null, undefined>
+      zoom: d3.ZoomBehavior<SVGSVGElement, unknown>
+      nodes: D3Node[]
+      links: D3Link[]
+      linkSel: d3.Selection<SVGLineElement, D3Link, SVGGElement, unknown>
+      nodeSel: d3.Selection<SVGGElement, D3Node, SVGGElement, unknown>
+    } | undefined
+    if (!datum) return
+
+    const q = query.toLowerCase()
+    let matchedLink: D3Link | null = null
+    let matchedChannel: TopoLink | null = null
+    for (const link of datum.links) {
+      const found = link.underlying.find(ch => ch.channelOutpoint.toLowerCase().includes(q))
+      if (found) {
+        matchedLink = link
+        matchedChannel = found
+        break
+      }
+    }
+
+    if (!matchedLink || !matchedChannel) {
+      setSearchMsg(t.noChannelFound)
+      return
+    }
+    setSearchMsg('')
+
+    const srcId = (matchedLink.source as D3Node).id
+    const tgtId = (matchedLink.target as D3Node).id
+
+    setSelectedTopoNode(null)
+    setSelectedChannelEdge({
+      sourceId: srcId,
+      targetId: tgtId,
+      channels: matchedLink.underlying,
+    })
+
+    const srcNode = datum.nodes.find(n => n.id === srcId)
+    const tgtNode = datum.nodes.find(n => n.id === tgtId)
+    if (srcNode && tgtNode) {
+      const cx = (srcNode.x + tgtNode.x) / 2
+      const cy = (srcNode.y + tgtNode.y) / 2
+      svgEl.transition().duration(750).call(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        datum.zoom.transform as any,
+        d3.zoomIdentity.translate(
+          (svgRef.current?.clientWidth ?? 800) / 2 - cx,
+          (svgRef.current?.clientHeight ?? 600) / 2 - cy,
+        ).scale(1.5),
+      )
+    }
+
+    const matchedLinkIdx = datum.links.indexOf(matchedLink)
+    datum.linkSel
+      .transition().duration(400)
+      .attr('stroke', (_d: D3Link, i: number) => i === matchedLinkIdx ? '#00ffff' : mergedLinkColor(_d))
+      .attr('stroke-width', (_d: D3Link, i: number) => i === matchedLinkIdx ? 4 : Math.min(Math.max(0.5, Math.sqrt(_d.totalCapacity / 1e8) * 0.4), 3))
+      .attr('stroke-opacity', (_d: D3Link, i: number) => i === matchedLinkIdx ? 1 : 0.6)
+      .style('filter', (_d: D3Link, i: number) => i === matchedLinkIdx ? 'url(#glow)' : 'none')
+
+    datum.linkSel
+      .filter((_d: D3Link, i: number) => i === matchedLinkIdx)
+      .transition().delay(400).duration(400).attr('stroke', '#ff4d6d')
+      .transition().duration(400).attr('stroke', '#00ffff')
+      .transition().duration(400).attr('stroke', '#ff4d6d')
+      .transition().duration(400).attr('stroke', '#00ffff')
+      .transition().duration(400).attr('stroke', (d: D3Link) => mergedLinkColor(d))
+      .attr('stroke-width', (d: D3Link) => Math.min(Math.max(0.5, Math.sqrt(d.totalCapacity / 1e8) * 0.4), 3))
+      .style('filter', 'none')
+  }, [t])
+
   const highlightPath = useCallback((pubkey1: string, pubkey2: string) => {
     if (!svgRef.current) return
     const svgEl = d3.select(svgRef.current)
@@ -1115,6 +1195,18 @@ export default function NetworkTopology({
             onKeyDown={e => { if (e.key === 'Enter' && singleSearch.trim()) highlightNode(singleSearch.trim()) }}
           />
           <button className="topoSearchBtn" onClick={() => { if (singleSearch.trim()) highlightNode(singleSearch.trim()) }}>
+            {t.search}
+          </button>
+        </div>
+        <div className="topoSearchGroup">
+          <input
+            className="topoSearchInput"
+            placeholder={t.outpointSearchPlaceholder}
+            value={outpointSearch}
+            onChange={e => setOutpointSearch(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && outpointSearch.trim()) highlightChannel(outpointSearch.trim()) }}
+          />
+          <button className="topoSearchBtn" onClick={() => { if (outpointSearch.trim()) highlightChannel(outpointSearch.trim()) }}>
             {t.search}
           </button>
         </div>
