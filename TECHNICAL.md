@@ -21,7 +21,7 @@
 3. 前端通过 `callFiberRpc`（封装在 `src/lib/rpc.ts`）对 `/api/rpc` 发起 HTTP 请求
 4. Node 端 `rpcProxy.ts` 接收请求，将其转换为 JSON-RPC 2.0 请求转发到真正的 Fiber 节点
 5. Fiber 节点返回 JSON-RPC 响应，经代理透传给前端
-6. 前端渲染多节点概览、单节点详情、Payment Hash 视图、RPC 调试结果等
+6. 前端渲染多节点概览、单节点详情、Payment Hash 视图、TLC 监控、RPC 调试结果等
 
 ## 主要模块
 
@@ -30,12 +30,13 @@
 单页应用的核心组件，包含：
 
 - 节点管理：左侧节点列表、添加 / 删除 / 批量导入
-- 顶部导航：Dashboard、Payment Hash、Channel Outpoint、RPC 调试、**Commitment Lock**（链上 commitment）、**Node Control**、网络拓扑（Topology）等视图切换
+- 顶部导航：Dashboard、Payment Hash、Channel Outpoint、**TLC 监控**、RPC 调试、**Commitment Lock**（链上 commitment）、**Node Control**、网络拓扑（Topology）等视图切换
 - Dashboard：
   - 概览（Overview）表格
   - 选中节点详情（Node Details）
 - Payment Hash 视图：跨节点扫描 `list_channels.pending_tlcs`
 - Channel Outpoint 视图：跨节点扫描 `list_channels`，按 `channel_outpoint` 匹配（可部分匹配）
+- TLC 监控：模块级组件 `TlcMonitorView`（行组件 `TlcMonitorTlcRow`、`ForceCloseMonitorRow`），跨节点扫描未结 TLC 与强制关闭 channel；数据模型与判定在 `src/lib/tlcMonitor.ts`，链上追踪在 `src/lib/ckb.ts` 的 `traceCommitmentSettlement`
 - RPC 调试视图：手动调用任意 Fiber JSON-RPC 方法
 - Commitment Lock：`App.tsx` 内的 `CommitmentTraceView`，依赖 `src/lib/ckb.ts` 调 CKB RPC 与本地解析 / 追踪逻辑
 - Node Control：选中节点后的分标签快捷 RPC 表单（`connect_peer`、`open_channel` 等）
@@ -47,11 +48,12 @@
 - `nodes: MonitoredNode[]`：当前配置的监控节点
 - `summaries: Record<string, NodeSummary>`：每个节点的概览信息
 - `details: NodeDetails | null`：当前选中节点的详情（node_info / peers / channels / graph_*）
-- `viewMode`：当前界面模式（含 `dashboard`、`paymentSearch`、`channelOutpointSearch`、`rpcDebug`、`commitmentTrace`、`nodeControl`、`networkTopology` 等）
+- `viewMode`：当前界面模式（含 `dashboard`、`paymentSearch`、`channelOutpointSearch`、`tlcMonitor`、`rpcDebug`、`commitmentTrace`、`nodeControl`、`networkTopology` 等）
 - `autoRefresh`：节点详情自动刷新标志（当前为常量 `true`，无可切换 UI）
 - `paymentSearch*` 系列 state：Payment Hash 扫描的查询、进度与结果
 - `overviewRefresh*` 系列 state：点击「刷新概览」时的进度与状态
 - `channelOutpointSearch*`：Channel Outpoint 跨节点扫描的查询、进度与结果
+- TLC 监控：`tlcScan` / `tlcScanState` / `tlcScanProgress`（节点扫描结果与进度）、`tlcChecks`（链上检查结果，键为 `chain_hash|funding outpoint`）、`tlcSettings`（安全窗口、自动重扫）、`tlcNow`（判定所用的当前时间，每 30 秒更新）、`tlcCustomCkbRpcUrl`；`tlcFirstSeenRef` 记录每个 TLC 首次被扫描到的时间（仅内存，刷新页面后重置）
 - Commitment Lock：`ctNetwork` / `ctTxHash` / `ctTraceState` / `ctTraceItems` 等与 CKB 追踪相关的 state
 - Node Control：`ncNodeInfo*` 及分标签表单 state（随选中节点拉取 `node_info` 等）
 
@@ -113,7 +115,34 @@ CKB 链交互与 **LN commitment** 解析 / 追踪：
 
 - `callCkbRpc`：通过 **`POST /api/rpc`** 将请求转到 body 中的 CKB `url`（与 Fiber 共用同一代理，不依赖 Fiber token）
 - `fetchAndParseTx`、`getLnTxTrace`、`parseLockArgs` / `parseWitness`（含 v2）等：供 Commitment Lock 视图使用
+- `parseWitnessV2(hex, paymentHashLen = 20)`：结算 witness 中 HTLC 的 payment hash 默认按 20 字节截断；lock args 为 58 字节且 features 字节 bit 0 置位时为 32 字节
+- `traceCommitmentSettlement(rpcUrl, commitmentCodeHash, fundingOutPoint, knownCommitmentTxHash, previous?)`：供 TLC 监控使用，返回 `CommitmentSettlementReport`
+  - funding cell 仍未花费 → `fundingLive`（同时查询已知 commitment 交易的状态，`unknown` / `rejected` 视为丢失）；找不到已确认的 funding 交易 → `fundingUnknown`
+  - 花费 funding 的交易没有 commitment lock 输出 → `cooperative`
+  - 否则从 commitment cell 开始逐步查找花费交易并解析 witness，记录每一步的解锁内容（HTLC preimage / 超时、local / remote 余额）、区块时间和剩余未领取部分；commitment cell 仍为 live → `settling`，链上不再有 commitment lock 输出 → `settled`，遇到 revocation → `revoked`，找不到花费交易 → `untraceable`，最多追 32 步（超出时 `truncated`）
+  - `delayMs` 由 commitment lock args 中的 delay epoch 换算（1 epoch 按 4 小时计）；可领取时间 = commitment 区块时间 + `delayMs`
+  - witness 里的 local / remote 是相对广播 commitment 的一方而言的；commitment code hash 传空字符串时按 lock args 长度（57 / 58 字节）识别 commitment 输出
+  - 传入上次的 `settling` 报告时，若其 live cell 仍未花费，只用 1 次 `get_live_cell` 就直接返回旧报告
 - `resolveNetworkConfig`：内置 testnet / mainnet 默认 RPC 与默认 commitment code hash；支持 custom RPC + 自定义 code hash
+
+### src/lib/tlcMonitor.ts
+
+TLC 监控的数据模型与判定逻辑（纯函数，无 React 依赖）：
+
+- `buildMonitoredChannel`：把 `list_channels` 的一条原始 channel 转成 `MonitoredChannel`；只保留有 `pending_tlcs` 或处于强制关闭阶段的 channel
+  - Fiber 状态到阶段：`ChannelReady` → `offchain`；`Stale` → `stale`；`ShuttingDown` + `WAITING_COMMITMENT_CONFIRMATION` → `forceClosing`（本方已广播 commitment），否则 `closing`；`Closed` + `UNCOOPERATIVE_*` + `WAITING_ONCHAIN_SETTLEMENT` → `settling`，只有 `UNCOOPERATIVE_*` → `settled`，其他 `Closed` → `closed`
+  - 发起方：`UNCOOPERATIVE_REMOTE` → 对方，`UNCOOPERATIVE_LOCAL` 或 `forceClosing` → 本方
+  - `channel_outpoint` 兼容对象、`0x…:index` 和 72 位十六进制（index 小端）三种形式
+  - 已知 commitment 交易取 `shutdown_transaction_hash`，没有时取 `latest_commitment_transaction_hash`
+- `assessTlc`：给每个 TLC 定位置（`TlcPhase`）、级别和原因
+  - 链下已 `RemoveAckConfirmed`、在链上结算步骤中找到对应解锁（payment hash 前缀 + 金额匹配）、channel 已协商关闭 → 已解决
+  - 链下：已过期或剩余时间小于安全窗口为危险，小于窗口 + `WARNING_LEAD_MS`（1h）为警告；`Stale` channel 至少为警告（Fiber 不会自动处理）；首次出现超过 `LONG_PENDING_MS`（30 分钟）至少为提示
+  - 链上等待 commitment 确认：commitment 交易丢失或 TLC 已过期为危险
+  - 链上结算中：TLC 已过期，且超过 max(过期时间, 可领取时间) 的时长大于安全窗口为危险、大于 0 为警告；不在上链的 commitment 中视为已解决
+- `assessForceClose`：根据链上报告给出 `ForceCloseResult`、附注（Fiber 状态与链上不一致、仍有 HTLC 锁在链上、步骤截断、含危险 / 警告 TLC），以及按发起方换算的本方 / 对方剩余金额；可领取后超过 `CLAIM_GRACE_MS`（1h）本方余额仍未领取为 `ownBalanceUnclaimed`
+- `buildTlcMonitorData`：生成排好序的 TLC 行、强制关闭行和统计（危险数、需关注数、链下 / 链上未结 TLC、超时未领取的 CKB 等，UDT channel 不计入 CKB 合计）
+- `pruneTlcFirstSeen`：扫描成功的节点上已经消失的 TLC 会从首次出现时间表中删除
+- `loadTlcMonitorSettings` / `saveTlcMonitorSettings`：设置持久化在 `localStorage` 的 `fiber-nodes-monits:tlcMonitor`
 
 ### server/rpcProxy.ts
 
@@ -270,6 +299,22 @@ Node 端的 Fiber JSON-RPC 代理：
 2. 各标签页组装参数并调用 `callFiberRpc(selectedNode, method, params)`
 3. 操作结果在面板内展示（成功 / 错误信息），具体字段与各 RPC 方法一致
 
+### 10. TLC 监控视图
+
+入口：顶部导航「🛡 TLC 监控」。首次进入时自动扫描一次，之后点「扫描全部节点」手动扫描，或开启自动重扫。
+
+1. `runTlcScan` 使用 `runWithConcurrency(nodes, 10, …)`，每个节点由 `scanNodeForTlcMonitor` 并行调用 `node_info` 和 `list_channels`（`include_closed: true`），失败的节点单独记录、不影响其他节点
+2. 每个 channel 经 `buildMonitoredChannel` 归类；全部完成后写入 `tlcScan`，并调用 `pruneTlcFirstSeen`
+3. 扫描结束后对 `forceClosing` / `settling` 阶段的 channel 以 `auto` 模式调用 `runTlcOnchainChecks`：
+   - 按 `chain_hash` 判断网络（`detectNetworkByChainHash` + `resolveNetworkConfig`），自定义链使用页面上填写的 CKB RPC URL
+   - `runWithConcurrency(jobs, 4, …)` 调用 `traceCommitmentSettlement`，结果按 `chain_hash|funding outpoint` 存入 `tlcChecks`；失败时保留上一次的报告并记录错误
+   - 三种模式：`auto` 跳过已有最终结果（`settled` / `revoked` / `cooperative`）以及 `ONCHAIN_RECHECK_MS`（5 分钟）内检查过的 channel；`refresh`（「检查全部链上状态」）只跳过已有最终结果的；`force`（行内「检查 / 重新检查」）总是重新追踪
+   - `tlcInFlightRef` 防止同一 channel 被并发重复检查
+4. `tlcData = buildTlcMonitorData(tlcScan, tlcChecks, tlcNow, 安全窗口)`；`tlcNow` 在扫描、检查完成时以及每 30 秒更新，渲染期间不直接调用 `Date.now()`
+5. 告警：`counts.danger > 0` 时 `document.title` 前加 `(N) ⚠`；导航按钮显示 `counts.attention`（危险 + 警告 TLC、需关注的强制关闭 channel、扫描失败的节点）
+6. 自动重扫：`tlcSettings.autoRescanMinutes` 大于 0 时立即扫描一次，然后用 `useInterval` 定时扫描；默认关闭
+7. 「追踪」按钮调用 `openCommitmentTrace`：切到 Commitment Lock 视图，按 `chain_hash` 设置网络并预填 funding 交易哈希，不自动开始追踪
+
 ## 扩展与修改建议
 
 1. 新增 RPC 视图或统计指标时：
@@ -281,6 +326,10 @@ Node 端的 Fiber JSON-RPC 代理：
 3. 安全强化：
    - 如需接入生产环境，可在 `rpcProxy.ts` 之前增加反向代理层做额外认证
    - 建议在代理层限制可调用的 JSON-RPC 方法名单
+4. 调整 TLC 监控判定：
+   - 阈值常量集中在 `src/lib/tlcMonitor.ts` 顶部（`DEFAULT_SAFETY_WINDOW_MINUTES`、`WARNING_LEAD_MS`、`LONG_PENDING_MS`、`CLAIM_GRACE_MS`、`ONCHAIN_RECHECK_MS`、`AUTO_RESCAN_OPTIONS`）
+   - 默认安全窗口 160 分钟来自 Fiber v0.10.1：出站 TLC 在 `expiry < now + tlc_expiry_delay` 时触发强制关闭，`tlc_expiry_delay` 为 commitment delay 的 2/3（默认 delay 1 epoch ≈ 4h）。`list_channels` 不返回 commitment delay，如节点改过该配置需要同步调整安全窗口
+   - Fiber 升级后如状态名或 flag 有变化，需同步修改 `getChannelPhase` / `getForceCloseInitiator`
 
 如需针对某一处逻辑进行更细粒度的说明，可以在本文件中根据模块继续拆分小节。
 

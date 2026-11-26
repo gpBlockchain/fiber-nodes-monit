@@ -317,6 +317,12 @@
   color: rgba(255, 179, 196, 0.95);
 }
 
+.pillWarn {
+  border-color: rgba(255, 209, 102, 0.35);
+  background: rgba(255, 209, 102, 0.08);
+  color: rgba(255, 230, 179, 0.95);
+}
+
 .muted {
   color: var(--muted);
 }

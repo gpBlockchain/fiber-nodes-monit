@@ -28,6 +28,15 @@
 - Channel Outpoint 视图：
   - 输入 Channel Outpoint（_tx_hash:index_ 形式或片段），对所有节点执行 `list_channels`（`include_closed: true`）并匹配 `channel_outpoint`（**支持部分匹配**）
   - 并发与进度条行为与 Payment Hash 扫描一致（默认并发 10）
+- TLC 监控视图（🛡 TLC 监控）：
+  - 对所有节点并发（默认 10）调用 `node_info` + `list_channels`（`include_closed: true`），找出仍有 `pending_tlcs` 的 channel，以及处于强制关闭阶段的 channel（`ShuttingDown` + `WAITING_COMMITMENT_CONFIRMATION`，或 `Closed` + `UNCOOPERATIVE_*`）
+  - TLC 表：逐条列出 TLC 所在节点、channel、方向、状态、金额、过期时间，标出它当前在链下还是链上（链下 · 通道正常 / 协商关闭中 / Stale，链上 · 等待 commitment 上链 / 结算中 / 已结算）以及判断原因；按「危险 / 警告 / 提示 / 正常」排序，可按需关注 / 未结 / 链下 / 链上 / 全部筛选
+  - 强制关闭表：通过 CKB RPC 从 funding outpoint 开始追踪 commitment 交易和之后的每一笔结算交易，展示发起方、commitment 交易与上链时间、可领取时间（commitment 上链时间 + delay）、每一步解锁了什么（HTLC preimage 领取 / 超时退回、本方 / 对方余额），以及仍锁在链上的余额、HTLC 和 capacity
+  - 扫描完成后自动检查 Fiber 认为仍在进行中的强制关闭 channel（同一 channel 5 分钟内不重复检查，已有最终结果的不再检查）；也可以单条「检查 / 重新检查」或「检查全部链上状态」。「追踪」会跳转到 Commitment Lock 视图并预填 funding 交易
+  - 判定阈值：安全窗口默认 160 分钟，对应 Fiber 默认 commitment delay（1 epoch ≈ 4h）的 2/3，也就是节点为出站 TLC 主动强制关闭的时间点。链下 TLC 已过期或剩余时间小于安全窗口为危险，小于窗口 + 60 分钟为警告；链上 TLC 已过期且已过 delay 仍未领取为警告，超出窗口为危险；强制关闭后本方余额在可领取 60 分钟后仍未领取为警告。链上实际是协商关闭、commitment 交易丢失等 Fiber 状态与链上不一致的情况也会标出
+  - 安全窗口可调；自动重扫默认关闭，可选每 1 / 5 / 15 分钟。两项设置保存在 `localStorage`（键名 `fiber-nodes-monits:tlcMonitor`）
+  - 存在危险项时，浏览器标签页标题前会加上 `(N) ⚠`，顶部导航按钮显示需关注的数量
+  - testnet / mainnet 节点使用内置的公共 CKB RPC；节点在自定义链上时，需要在页面上填写 CKB RPC URL 才能做链上检查
 - RPC 调试视图：
   - 选择一个节点后，可手动输入任意 Fiber JSON-RPC 方法名与 JSON 形式的 params，通过统一代理直接发起调用
   - **快捷调用**：提供常用方法的一键模板填充，包括：
@@ -69,7 +78,7 @@ fiber-nodes-monit/   （npm package 名：fiber-nodes-monits）
 │  ├─ prod.ts         # 生产环境入口（npm start）
 │  └─ rpcProxy.ts     # JSON-RPC 代理：/api/rpc → 任意 HTTP(S) JSON-RPC（Fiber 或 CKB）
 ├─ src/
-│  ├─ App.tsx         # 主页面和 UI 逻辑（含 CommitmentTraceView 内联组件）
+│  ├─ App.tsx         # 主页面和 UI 逻辑（含 CommitmentTraceView、TlcMonitorView 等内联组件）
 │  ├─ App.css         # 页面样式
 │  ├─ index.css       # 全局样式与变量
 │  ├─ components/
@@ -81,7 +90,8 @@ fiber-nodes-monit/   （npm package 名：fiber-nodes-monits）
 │  │  ├─ format.ts    # 展示相关的格式化工具
 │  │  ├─ clipboard.ts # 剪贴板写入封装
 │  │  ├─ i18n.ts      # 界面语言
-│  │  └─ ckb.ts       # CKB 相关辅助（如用于跟踪等视图）
+│  │  ├─ ckb.ts       # CKB 相关辅助（Commitment Lock 追踪、强制关闭结算追踪）
+│  │  └─ tlcMonitor.ts # TLC 监控：channel / TLC 状态归类、风险判定与统计
 │  └─ main.tsx        # React 入口
 └─ package.json
 ```
@@ -142,7 +152,7 @@ npm run preview
 
 - `node_info`
 - `list_peers`
-- `list_channels`（参数：`{ include_closed: true }`，用于概览统计、单节点 Channels 视图以及 Payment Hash 扫描）
+- `list_channels`（参数：`{ include_closed: true }`，用于概览统计、单节点 Channels 视图、Payment Hash / Channel Outpoint 扫描以及 TLC 监控）
 - `graph_nodes` / `graph_channels`：
   - 单节点详情中的概览区块：通常 `limit: 0x14`（20 条）
   - **网络拓扑**视图：对二者分页拉取（例如每批 `0x64`），直到 `last_cursor` 为空，以绘制全图
@@ -150,6 +160,8 @@ npm run preview
 Node Control 等视图还会按需调用其他 Fiber JSON-RPC（如 `connect_peer`、`open_channel`、`send_payment` 等）。
 
 Commitment Lock 会通过 `src/lib/ckb.ts` 调用 CKB 链 RPC（如 `get_transaction` 及追踪所需的辅助调用），具体方法以实现为准。
+
+TLC 监控视图对每个节点只调用只读的 `node_info`（取 `chain_hash` 判断网络）和 `list_channels`。强制关闭 channel 的链上检查同样经 `src/lib/ckb.ts` 调用 CKB RPC：`get_live_cell`、`get_transaction`、`get_header`，以及 indexer 的 `get_transactions`（按 lock script 查找花费交易），并发为 4。
 
 代理会根据前端传入的配置构造请求：
 
@@ -174,3 +186,6 @@ Commitment Lock 会通过 `src/lib/ckb.ts` 调用 CKB 链 RPC（如 `get_transac
   - 检查节点本身是否存活
   - 检查网络连通性（本机到节点端口是否可达）
   - 检查是否有防火墙 / 安全组阻断请求
+- TLC 监控里强制关闭 channel 显示「未检查链上」或「链上检查失败」：
+  - Fiber 状态为 `Closed` + `UNCOOPERATIVE_*`（没有 `WAITING_ONCHAIN_SETTLEMENT`）的 channel 不会自动检查，可点该行的「检查」
+  - 检查失败时，确认本机能访问对应的 CKB RPC；自定义链需先在页面上填写 CKB RPC URL
