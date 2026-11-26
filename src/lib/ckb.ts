@@ -98,7 +98,7 @@ async function getBlockHeader(rpcUrl: string, blockHash: string): Promise<CkbBlo
 }
 
 type CkbIndexerResult = {
-  objects: { tx_hash: string }[]
+  objects: { tx_hash: string; io_type?: string; io_index?: string }[]
 }
 
 async function getTransactions(
@@ -258,7 +258,7 @@ export function parseWitness(hex: string): ParsedWitness {
   return witnessData
 }
 
-export function parseWitnessV2(hex: string): ParsedWitness {
+export function parseWitnessV2(hex: string, paymentHashLen = 20): ParsedWitness {
   const data = hex.startsWith('0x') ? hex.substring(2) : hex
   let offset = 0
   const emptyWitnessArgs = data.substring(offset, offset + 32); offset += 32
@@ -278,7 +278,7 @@ export function parseWitnessV2(hex: string): ParsedWitness {
       const htlc_type = parseInt(data.substring(offset, offset + 2), 16); offset += 2
       const paymentAmountHex = data.substring(offset, offset + 32)
       const payment_amount = littleEndianHexToBigInt(paymentAmountHex); offset += 32
-      const payment_hash = `0x${data.substring(offset, offset + 40)}`; offset += 40
+      const payment_hash = `0x${data.substring(offset, offset + paymentHashLen * 2)}`; offset += paymentHashLen * 2
       const remote_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`; offset += 40
       const local_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`; offset += 40
       const htlcExpiryHex = data.substring(offset, offset + 16)
@@ -504,6 +504,315 @@ export async function fetchAndParseTx(
     if (v1 === 1n) version = '1'
   }
   return { lockArgs, witness, version }
+}
+
+type CkbScript = { code_hash: string; hash_type: string; args: string }
+
+type CkbTxView = {
+  transaction: {
+    inputs: { previous_output: { tx_hash: string; index: string } }[]
+    outputs: { capacity: string; lock: CkbScript }[]
+    witnesses: string[]
+  } | null
+  tx_status: { status: string; block_hash?: string | null }
+}
+
+type SpendingTx = { txHash: string; view: CkbTxView; inputIndex: number }
+
+export type CommitmentHtlc = {
+  index: number
+  offered: boolean
+  paymentHash: string
+  amount: string
+  expiryMs: number
+}
+
+export type CommitmentUnlockKind = 'htlcPreimage' | 'htlcTimeout' | 'remoteBalance' | 'localBalance' | 'unknown'
+
+export type CommitmentUnlock = {
+  kind: CommitmentUnlockKind
+  htlc: CommitmentHtlc | null
+  amount: string | null
+}
+
+export type CommitmentSettlementStep = {
+  txHash: string
+  timestamp: number | null
+  revocation: boolean
+  parsed: boolean
+  htlcs: CommitmentHtlc[]
+  localAmount: string | null
+  remoteAmount: string | null
+  unlocks: CommitmentUnlock[]
+}
+
+export type CommitmentRemaining = {
+  htlcs: CommitmentHtlc[]
+  localAmount: string
+  remoteAmount: string
+}
+
+export type CommitmentSettlementStatus =
+  | 'fundingLive'
+  | 'fundingUnknown'
+  | 'cooperative'
+  | 'settling'
+  | 'settled'
+  | 'revoked'
+  | 'untraceable'
+
+export type CommitmentSettlementReport = {
+  status: CommitmentSettlementStatus
+  commitmentTxHash: string | null
+  commitmentTxStatus: string | null
+  commitmentTimestamp: number | null
+  delayMs: number | null
+  liveCell: { txHash: string; index: number; capacity: string } | null
+  remaining: CommitmentRemaining | null
+  steps: CommitmentSettlementStep[]
+  lastActivityAt: number | null
+  truncated: boolean
+}
+
+const COMMITMENT_ARGS_LEGACY_LEN = 57
+const COMMITMENT_ARGS_FEATURES_LEN = 58
+const MAX_SETTLEMENT_STEPS = 32
+const EPOCH_DURATION_MS = 4 * 60 * 60 * 1000
+
+function scriptArgsByteLength(args: string): number {
+  return (args.startsWith('0x') ? args.length - 2 : args.length) / 2
+}
+
+function hasCommitmentArgs(args: string): boolean {
+  const len = scriptArgsByteLength(args)
+  return len === COMMITMENT_ARGS_LEGACY_LEN || len === COMMITMENT_ARGS_FEATURES_LEN
+}
+
+function findCommitmentOutput(outputs: { lock: CkbScript }[], codeHash: string): number {
+  const target = codeHash.toLowerCase()
+  if (target) return outputs.findIndex((o) => o.lock.code_hash.toLowerCase() === target)
+  return outputs.findIndex((o) => hasCommitmentArgs(o.lock.args))
+}
+
+function settlementPaymentHashLen(lockArgs: string): number {
+  if (scriptArgsByteLength(lockArgs) !== COMMITMENT_ARGS_FEATURES_LEN) return 20
+  return parseInt(lockArgs.slice(-2), 16) & 1 ? 32 : 20
+}
+
+function commitmentDelayMs(lockArgs: string): number | null {
+  const data = lockArgs.startsWith('0x') ? lockArgs.slice(2) : lockArgs
+  if (data.length < 56) return null
+  const epoch = parseEpoch(littleEndianHexToBigInt(data.substring(40, 56)))
+  const length = Number(epoch.length)
+  const fraction = length > 0 ? Number(epoch.index) / length : 0
+  return Math.round((Number(epoch.number) + fraction) * EPOCH_DURATION_MS)
+}
+
+async function getTxView(rpcUrl: string, txHash: string): Promise<CkbTxView | null> {
+  return callCkbRpc<CkbTxView | null>(rpcUrl, 'get_transaction', [txHash])
+}
+
+async function isCellLive(rpcUrl: string, txHash: string, index: number): Promise<boolean> {
+  const res = await callCkbRpc<{ status?: string } | null>(rpcUrl, 'get_live_cell', [
+    { tx_hash: txHash, index: `0x${index.toString(16)}` },
+    false,
+  ])
+  return res?.status === 'live'
+}
+
+async function getBlockTimestamp(rpcUrl: string, blockHash: string | null | undefined): Promise<number | null> {
+  if (!blockHash) return null
+  try {
+    const header = await getBlockHeader(rpcUrl, blockHash)
+    return header ? parseInt(header.timestamp, 16) : null
+  } catch {
+    return null
+  }
+}
+
+function findSpentInputIndex(view: CkbTxView, txHash: string, index: number): number {
+  if (!view.transaction) return -1
+  const target = txHash.toLowerCase()
+  return view.transaction.inputs.findIndex(
+    (input) =>
+      input.previous_output.tx_hash.toLowerCase() === target &&
+      parseInt(input.previous_output.index, 16) === index,
+  )
+}
+
+async function findSpendingTx(rpcUrl: string, lock: CkbScript, txHash: string, index: number): Promise<SpendingTx | null> {
+  const res = await getTransactions(rpcUrl, { script: lock, script_type: 'lock', script_search_mode: 'exact' }, 'asc', '0x64')
+  const candidates = Array.from(new Set((res?.objects ?? []).filter((o) => o.io_type === 'input').map((o) => o.tx_hash)))
+  for (const candidate of candidates) {
+    const view = await getTxView(rpcUrl, candidate)
+    if (!view) continue
+    const inputIndex = findSpentInputIndex(view, txHash, index)
+    if (inputIndex >= 0) return { txHash: candidate, view, inputIndex }
+  }
+  return null
+}
+
+function parseSettlementStep(
+  txHash: string,
+  witness: string | undefined,
+  lockArgs: string,
+  timestamp: number | null,
+): CommitmentSettlementStep {
+  const step: CommitmentSettlementStep = {
+    txHash,
+    timestamp,
+    revocation: false,
+    parsed: false,
+    htlcs: [],
+    localAmount: null,
+    remoteAmount: null,
+    unlocks: [],
+  }
+  if (!witness || !hasCommitmentArgs(lockArgs)) return step
+  let parsed: ParsedWitness
+  try {
+    parsed = parseWitnessV2(witness, settlementPaymentHashLen(lockArgs))
+  } catch {
+    return step
+  }
+  if (parsed.unlock_count === 0) {
+    step.revocation = true
+    step.parsed = true
+    return step
+  }
+  const settlement = parsed.settlement
+  if (!settlement) return step
+  step.parsed = true
+  step.localAmount = settlement.settlement_local_amount
+  step.remoteAmount = settlement.settlement_remote_amount
+  step.htlcs = settlement.htlcs.map((htlc, index): CommitmentHtlc => ({
+    index,
+    offered: (htlc.htlc_type & 1) === 0,
+    paymentHash: htlc.payment_hash,
+    amount: htlc.payment_amount,
+    expiryMs: Number(htlc.htlc_expiry_timestamp),
+  }))
+  step.unlocks = settlement.unlocks.map((unlock): CommitmentUnlock => {
+    if (unlock.unlock_type === 0xFE) return { kind: 'remoteBalance', htlc: null, amount: settlement.settlement_remote_amount }
+    if (unlock.unlock_type === 0xFF) return { kind: 'localBalance', htlc: null, amount: settlement.settlement_local_amount }
+    const htlc = step.htlcs[unlock.unlock_type]
+    if (!htlc) return { kind: 'unknown', htlc: null, amount: null }
+    return { kind: unlock.with_preimage === 1 ? 'htlcPreimage' : 'htlcTimeout', htlc, amount: htlc.amount }
+  })
+  return step
+}
+
+function remainingAfter(step: CommitmentSettlementStep): CommitmentRemaining | null {
+  if (!step.parsed || step.revocation) return null
+  const unlockedHtlcs = new Set(step.unlocks.map((u) => u.htlc?.index))
+  const claimed = new Set(step.unlocks.map((u) => u.kind))
+  return {
+    htlcs: step.htlcs.filter((h) => !unlockedHtlcs.has(h.index)),
+    localAmount: claimed.has('localBalance') ? '0' : step.localAmount ?? '0',
+    remoteAmount: claimed.has('remoteBalance') ? '0' : step.remoteAmount ?? '0',
+  }
+}
+
+export async function traceCommitmentSettlement(
+  rpcUrl: string,
+  commitmentCodeHash: string,
+  fundingOutPoint: { txHash: string; index: number },
+  knownCommitmentTxHash: string | null,
+  previous: CommitmentSettlementReport | null = null,
+): Promise<CommitmentSettlementReport> {
+  if (previous?.status === 'settling' && previous.liveCell && !previous.truncated) {
+    if (await isCellLive(rpcUrl, previous.liveCell.txHash, previous.liveCell.index)) return previous
+  }
+
+  const report: CommitmentSettlementReport = {
+    status: 'fundingUnknown',
+    commitmentTxHash: knownCommitmentTxHash,
+    commitmentTxStatus: null,
+    commitmentTimestamp: null,
+    delayMs: null,
+    liveCell: null,
+    remaining: null,
+    steps: [],
+    lastActivityAt: null,
+    truncated: false,
+  }
+
+  if (await isCellLive(rpcUrl, fundingOutPoint.txHash, fundingOutPoint.index)) {
+    report.status = 'fundingLive'
+    if (knownCommitmentTxHash) {
+      const view = await getTxView(rpcUrl, knownCommitmentTxHash)
+      report.commitmentTxStatus = view?.tx_status?.status ?? 'unknown'
+    }
+    return report
+  }
+
+  const fundingTx = await getTxView(rpcUrl, fundingOutPoint.txHash)
+  const fundingOutput = fundingTx?.transaction?.outputs[fundingOutPoint.index]
+  if (!fundingOutput || fundingTx?.tx_status.status !== 'committed') return report
+
+  let closing: SpendingTx | null = null
+  if (knownCommitmentTxHash) {
+    const view = await getTxView(rpcUrl, knownCommitmentTxHash)
+    if (view?.tx_status.status === 'committed') {
+      const inputIndex = findSpentInputIndex(view, fundingOutPoint.txHash, fundingOutPoint.index)
+      if (inputIndex >= 0) closing = { txHash: knownCommitmentTxHash, view, inputIndex }
+    }
+  }
+  if (!closing) closing = await findSpendingTx(rpcUrl, fundingOutput.lock, fundingOutPoint.txHash, fundingOutPoint.index)
+  if (!closing?.view.transaction) {
+    report.status = 'untraceable'
+    return report
+  }
+
+  report.commitmentTxHash = closing.txHash
+  report.commitmentTxStatus = closing.view.tx_status.status
+  report.commitmentTimestamp = await getBlockTimestamp(rpcUrl, closing.view.tx_status.block_hash)
+  report.lastActivityAt = report.commitmentTimestamp
+
+  let cellTxHash = closing.txHash
+  let outputs = closing.view.transaction.outputs
+  let cellIndex = findCommitmentOutput(outputs, commitmentCodeHash)
+  if (cellIndex < 0) {
+    report.status = 'cooperative'
+    return report
+  }
+  report.delayMs = commitmentDelayMs(outputs[cellIndex].lock.args)
+
+  for (let i = 0; i < MAX_SETTLEMENT_STEPS; i += 1) {
+    const cell = outputs[cellIndex]
+    if (await isCellLive(rpcUrl, cellTxHash, cellIndex)) {
+      report.status = 'settling'
+      report.liveCell = { txHash: cellTxHash, index: cellIndex, capacity: cell.capacity }
+      const lastStep = report.steps[report.steps.length - 1]
+      report.remaining = lastStep ? remainingAfter(lastStep) : null
+      return report
+    }
+    const spender = await findSpendingTx(rpcUrl, cell.lock, cellTxHash, cellIndex)
+    if (!spender?.view.transaction) {
+      report.status = 'untraceable'
+      return report
+    }
+    const timestamp = await getBlockTimestamp(rpcUrl, spender.view.tx_status.block_hash)
+    const step = parseSettlementStep(spender.txHash, spender.view.transaction.witnesses[spender.inputIndex], cell.lock.args, timestamp)
+    report.steps.push(step)
+    report.lastActivityAt = timestamp ?? report.lastActivityAt
+    if (step.revocation) {
+      report.status = 'revoked'
+      return report
+    }
+    const nextIndex = findCommitmentOutput(spender.view.transaction.outputs, cell.lock.code_hash)
+    if (nextIndex < 0) {
+      report.status = 'settled'
+      return report
+    }
+    cellTxHash = spender.txHash
+    outputs = spender.view.transaction.outputs
+    cellIndex = nextIndex
+  }
+
+  report.status = 'settling'
+  report.truncated = true
+  return report
 }
 
 export type LiveCell = {

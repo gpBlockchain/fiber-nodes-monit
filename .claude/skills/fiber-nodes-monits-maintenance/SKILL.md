@@ -10,7 +10,7 @@ This skill helps maintain and extend the **fiber-nodes-monits** project: a React
 
 Use this skill whenever you:
 - Modify the Fiber monitor UI or behavior
-- Add or change RPC-backed views（Overview、单节点详情、Payment Hash、网络拓扑、RPC 调试等）
+- Add or change RPC-backed views（Overview、单节点详情、Payment Hash、TLC 监控、网络拓扑、RPC 调试等）
 - Adjust polling / auto-refresh / concurrency
 - Debug issues in JSON-RPC calls or node data rendering
 
@@ -30,7 +30,7 @@ Keep instructions concise and follow existing code patterns.
 - `src/App.tsx`
   - Main SPA component and all current UI:
     - Node list & management (add / remove / bulk import)
-    - View modes: Dashboard、Payment Hash、Channel Outpoint 扫描、RPC 调试、Commitment Lock（CKB 链上追踪）、Node Control、网络拓扑（Topology）等
+    - View modes: Dashboard、Payment Hash、Channel Outpoint 扫描、TLC 监控、RPC 调试、Commitment Lock（CKB 链上追踪）、Node Control、网络拓扑（Topology）等
     - Dashboard:
       - Overview table (multi-node summary)
       - Selected node details (node_info, peers, channels, graph_nodes, graph_channels, Pending TLCs)
@@ -39,6 +39,10 @@ Keep instructions concise and follow existing code patterns.
       - Concurrency-limited scanning with progress bar
     - Channel Outpoint view:
       - Cross-node `list_channels` scan; match `channel_outpoint` with case-insensitive partial match (`includes`)
+    - TLC 监控 view (`viewMode === 'tlcMonitor'`; module-level `TlcMonitorView`, `TlcMonitorTlcRow`, `ForceCloseMonitorRow`):
+      - Cross-node `node_info` + `list_channels` scan (`runTlcScan` → `scanNodeForTlcMonitor`)
+      - Rates every pending TLC (off-chain vs on-chain, time to expiry vs safety window) and traces force-closed channels on CKB (`runTlcOnchainChecks` → `traceCommitmentSettlement`)
+      - Raises a `(N) ⚠` prefix on `document.title` and a count badge on the nav button
     - RPC 调试 view:
       - Free-form Fiber JSON-RPC method + params caller
     - Commitment Lock (`CommitmentTraceView` in `App.tsx`, logic in `src/lib/ckb.ts`):
@@ -77,6 +81,15 @@ Keep instructions concise and follow existing code patterns.
 
 - `src/lib/ckb.ts`
   - CKB RPC client (`callCkbRpc` → `/api/rpc` with CKB `url`), commitment parsing, `getLnTxTrace`, network presets (testnet/mainnet)
+  - `traceCommitmentSettlement`: follows funding outpoint → commitment tx → each settlement tx, returns a `CommitmentSettlementReport` (status, claimable time inputs, per-step unlocks, what is still locked)
+
+- `src/lib/tlcMonitor.ts`
+  - Pure logic for the TLC monitor, no React:
+    - Fiber channel state → phase (`buildMonitoredChannel`)
+    - TLC and force-close assessments (`assessTlc`, `assessForceClose`)
+    - Sorted rows and counts (`buildTlcMonitorData`)
+    - Settings persisted under `fiber-nodes-monits:tlcMonitor`
+  - Thresholds are the constants at the top of the file
 
 - `server/rpcProxy.ts`
   - Node.js JSON-RPC proxy:
@@ -110,6 +123,8 @@ Respect these invariants when modifying the project:
    - Default concurrency is **10** for:
      - Overview refresh (`pollSummaries`)
      - Payment Hash scan (`runPaymentSearch`)
+     - TLC monitor node scan (`runTlcScan`)
+   - TLC monitor CKB checks (`runTlcOnchainChecks`) use **4**, because each trace makes several CKB calls. In `auto` mode they skip channels with a final report (`settled` / `revoked` / `cooperative`) and channels checked within `ONCHAIN_RECHECK_MS` (5 min).
    - If adjusting, keep a reasonable limit to protect nodes and network.
 
 5. **Overview behavior**
@@ -118,6 +133,7 @@ Respect these invariants when modifying the project:
      - Collapse / expand toggle
      - Refresh progress bar showing completed/total nodes
    - Do not reintroduce automatic Overview polling without a strong reason.
+   - The TLC monitor's auto-rescan is separate and opt-in. It is off by default; the user can pick 1 / 5 / 15 min. Keep the default off.
 
 6. **Node details refresh**
    - Current selected node:
@@ -129,6 +145,11 @@ Respect these invariants when modifying the project:
    - Use existing CSS classes in `App.css` / `index.css`:
      - `card`, `cardHeader`, `cardBody`, `table`, `pill`, `badge`, `btn`, `btnGhost`, etc.
    - Keep layout and typography consistent with current cards and tables.
+
+8. **React lint rules**
+   - ESLint runs the compiler-based `react-hooks` v7 rules. During render, do not call `Date.now()` and do not read `ref.current`; keep a "now" in state (like `tlcNow`) instead.
+   - Do not call `setState` synchronously in an effect body.
+   - Define components at module level, not inside `App`.
 
 ## 3. Common Maintenance Tasks
 
@@ -216,6 +237,30 @@ When changing how often or when data is refreshed:
      - URL, headers, `Authorization` token.
    - Validate that the node RPC endpoint is reachable outside the app.
 
+### 3.5 TLC monitor and force-close tracing
+
+1. **Fiber facts the rules rely on** (checked against Fiber v0.10.1)
+   - Fiber force-closes a channel for an offered TLC when `expiry < now + tlc_expiry_delay`.
+   - `tlc_expiry_delay` is 2/3 of the commitment delay. The default delay is 1 epoch (≈4h), which gives the default 160-minute safety window.
+   - `list_channels` does not return the commitment delay. If nodes use a different delay, change the safety window.
+   - `ShuttingDown` + `WAITING_COMMITMENT_CONFIRMATION` means our commitment was broadcast.
+   - Fiber does not handle `Stale` channels automatically.
+   - `pending_tlcs` keeps removed TLCs (`RemoveAckConfirmed`) until they are pruned. The monitor treats these as resolved.
+
+2. **On-chain parsing**
+   - Settlement witnesses carry a 20-byte payment-hash prefix, or 32 bytes when the 58-byte lock args have features bit 0 set (`parseWitnessV2(hex, paymentHashLen)`).
+   - TLCs are matched to HTLCs by hash prefix plus amount.
+   - Witness local/remote values are from the broadcaster's side. `assessForceClose` maps them to ours/theirs by `initiator`.
+
+3. **Changing rules or states**
+   - Change thresholds in the `tlcMonitor.ts` constants.
+   - Change state mapping in `getChannelPhase` / `getForceCloseInitiator`.
+   - Add new reasons or results to the type unions and to both `zh` and `en` label maps in `i18n.ts` (`tlcReasonLabels`, `fcResultLabels`, `fcNoteLabels`).
+
+4. **Checking without a browser**
+   - Load `TlcMonitorView` through Vite `ssrLoadModule` and render it with `react-dom/server` `renderToStaticMarkup`.
+   - Feed it a saved `list_channels` response plus `buildTlcMonitorData`.
+
 ## 4. Safe Change & Verification Checklist
 
 For any non-trivial change:
@@ -239,6 +284,7 @@ For any non-trivial change:
      - Overview refresh and progress bar.
      - Selected node details auto刷新 + 手动刷新.
      - Payment Hash 与 Channel Outpoint 扫描、进度条与结果表.
+     - TLC 监控：扫描全部节点；TLC 表与强制关闭表的筛选；单条「检查 / 重新检查」与明细展开；「追踪」跳转到 Commitment Lock；有危险项时标签页标题出现 `(N) ⚠`。
      - RPC 调试视图调用常见方法（`node_info`, `list_peers`, `list_channels` 等）。
      - Commitment Lock：testnet/mainnet 或 custom CKB RPC 下追踪一笔交易（若环境可用）。
      - Node Control：在选中节点上试一项安全只读或测试网操作。

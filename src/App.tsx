@@ -21,12 +21,41 @@ import {
   computeAccountBalance,
   formatCkbBalance,
   lockScriptToAddress,
+  traceCommitmentSettlement,
   type CkbNetwork,
   type TraceItem,
   type ParsedLockArgs,
   type ParsedWitness,
   type AccountBalance,
+  type CommitmentSettlementReport,
+  type CommitmentUnlockKind,
 } from './lib/ckb'
+import {
+  AUTO_RESCAN_OPTIONS,
+  CLAIM_GRACE_MS,
+  ONCHAIN_RECHECK_MS,
+  WARNING_LEAD_MS,
+  buildMonitoredChannel,
+  buildTlcMonitorData,
+  checkKeyOf,
+  formatDurationShort,
+  isAttention,
+  isFinalReport,
+  isOnchainTlcPhase,
+  loadTlcMonitorSettings,
+  pruneTlcFirstSeen,
+  saveTlcMonitorSettings,
+  type ForceCloseInitiator,
+  type ForceCloseRow,
+  type MonitoredChannel,
+  type OnchainCheck,
+  type TlcMonitorData,
+  type TlcMonitorNodeResult,
+  type TlcMonitorScan,
+  type TlcMonitorSettings,
+  type TlcRow,
+  type TlcSeverity,
+} from './lib/tlcMonitor'
 
 type JsonObj = Record<string, unknown>
 
@@ -313,6 +342,44 @@ async function fetchNodeDetails(node: MonitoredNode, opts?: { onlyPending?: bool
   }
 }
 
+const BASE_DOCUMENT_TITLE = document.title
+
+type TlcCheckMode = 'auto' | 'refresh' | 'force'
+
+async function scanNodeForTlcMonitor(
+  node: MonitoredNode,
+  firstSeen: Map<string, number>,
+  scannedAt: number,
+): Promise<{ result: TlcMonitorNodeResult; channels: MonitoredChannel[] }> {
+  const owner = { nodeId: node.id, nodeName: node.name }
+  try {
+    const [nodeInfo, channelsRes] = await Promise.all([
+      callFiberRpc<JsonObj>(node, 'node_info'),
+      callFiberRpc<{ channels: unknown[] }>(node, 'list_channels', { include_closed: true }),
+    ])
+    const chainHash = getString(asObj(nodeInfo), 'chain_hash')
+    const rawChannels = Array.isArray(channelsRes?.channels) ? channelsRes.channels : []
+    const channels = rawChannels
+      .map((raw) => buildMonitoredChannel(owner, raw, chainHash, firstSeen, scannedAt))
+      .filter((c): c is MonitoredChannel => c !== null)
+    return {
+      result: { ...owner, ok: true, error: null, chainHash, channelCount: rawChannels.length },
+      channels,
+    }
+  } catch (err) {
+    return {
+      result: {
+        ...owner,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        chainHash: null,
+        channelCount: 0,
+      },
+      channels: [],
+    }
+  }
+}
+
 function App() {
   const [lang, setLang] = useState<Lang>(() => loadLang())
   const t = translations[lang]
@@ -346,7 +413,7 @@ function App() {
     total: 0,
   })
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'commitmentTrace' | 'nodeControl' | 'networkTopology'>('dashboard')
+  const [viewMode, setViewMode] = useState<'dashboard' | 'paymentSearch' | 'rpcDebug' | 'channelOutpointSearch' | 'tlcMonitor' | 'commitmentTrace' | 'nodeControl' | 'networkTopology'>('dashboard')
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false)
   const [channelStateFilter, setChannelStateFilter] = useState<string>('ALL')
   const [paymentHashQuery, setPaymentHashQuery] = useState('')
@@ -1269,6 +1336,185 @@ function App() {
     }
   }, [selectedNode, ncActiveOp, ncConnectAddr, ncConnectSave, ncOpenPubkey, ncOpenAmount, ncOpenPublic, ncInvoiceAmount, ncInvoiceCurrency, ncInvoiceDesc, ncInvoiceHashAlgo, ncPayInvoice, ncPayKeysend, ncPayTarget, ncPayAmount, ncShutdownChannelId, ncShutdownForce, ncGetPaymentHash, ncGetInvoiceHash])
 
+  const [tlcSettings, setTlcSettings] = useState<TlcMonitorSettings>(() => loadTlcMonitorSettings())
+  const [tlcScan, setTlcScan] = useState<TlcMonitorScan | null>(null)
+  const [tlcScanState, setTlcScanState] = useState<{
+    status: 'idle' | 'scanning' | 'done' | 'error'
+    error?: string
+  }>({ status: 'idle' })
+  const [tlcScanProgress, setTlcScanProgress] = useState<{ completed: number; total: number }>({
+    completed: 0,
+    total: 0,
+  })
+  const [tlcChecks, setTlcChecks] = useState<Record<string, OnchainCheck>>({})
+  const [tlcCustomCkbRpcUrl, setTlcCustomCkbRpcUrl] = useState('')
+  const [tlcNow, setTlcNow] = useState(0)
+  const tlcChecksRef = useRef(tlcChecks)
+  const tlcInFlightRef = useRef(new Set<string>())
+  const tlcFirstSeenRef = useRef(new Map<string, number>())
+  const tlcScanRunningRef = useRef(false)
+
+  useEffect(() => {
+    tlcChecksRef.current = tlcChecks
+  }, [tlcChecks])
+
+  const updateTlcSettings = useCallback((patch: Partial<TlcMonitorSettings>) => {
+    setTlcSettings((prev) => {
+      const next = { ...prev, ...patch }
+      saveTlcMonitorSettings(next)
+      return next
+    })
+  }, [])
+
+  const runTlcOnchainChecks = useCallback(
+    async (targets: MonitoredChannel[], mode: TlcCheckMode) => {
+      const startedAt = Date.now()
+      const jobs: { key: string; channel: MonitoredChannel; previous: CommitmentSettlementReport | null }[] = []
+      for (const channel of targets) {
+        const key = checkKeyOf(channel)
+        if (!key || !channel.outpoint || tlcInFlightRef.current.has(key)) continue
+        const existing = tlcChecksRef.current[key]
+        if (mode !== 'force' && isFinalReport(existing?.report ?? null)) continue
+        if (mode === 'auto' && existing && startedAt - existing.checkedAt < ONCHAIN_RECHECK_MS) continue
+        tlcInFlightRef.current.add(key)
+        jobs.push({ key, channel, previous: existing?.report ?? null })
+      }
+      if (!jobs.length) return
+      setTlcChecks((prev) => {
+        const next = { ...prev }
+        for (const { key } of jobs) {
+          next[key] = {
+            status: 'checking',
+            report: prev[key]?.report ?? null,
+            error: null,
+            checkedAt: prev[key]?.checkedAt ?? 0,
+          }
+        }
+        return next
+      })
+      const customRpcUrl = tlcCustomCkbRpcUrl.trim()
+      await runWithConcurrency(jobs, 4, async ({ key, channel, previous }) => {
+        const cfg = resolveNetworkConfig(detectNetworkByChainHash(channel.chainHash ?? ''), customRpcUrl, '')
+        let check: OnchainCheck
+        if (!cfg.rpcUrl || !channel.outpoint) {
+          check = { status: 'error', report: previous, error: t.customNetworkNoRpc, checkedAt: Date.now() }
+        } else {
+          try {
+            const report = await traceCommitmentSettlement(
+              cfg.rpcUrl,
+              cfg.commitmentCodeHash,
+              channel.outpoint,
+              channel.knownCommitmentTxHash,
+              previous,
+            )
+            check = { status: 'done', report, error: null, checkedAt: Date.now() }
+          } catch (err) {
+            check = {
+              status: 'error',
+              report: previous,
+              error: err instanceof Error ? err.message : String(err),
+              checkedAt: Date.now(),
+            }
+          }
+        }
+        tlcInFlightRef.current.delete(key)
+        setTlcChecks((prev) => ({ ...prev, [key]: check }))
+      })
+      setTlcNow(Date.now())
+    },
+    [tlcCustomCkbRpcUrl, t],
+  )
+
+  const runTlcScan = useCallback(async () => {
+    if (!nodes.length || tlcScanRunningRef.current) return
+    tlcScanRunningRef.current = true
+    setTlcScanState({ status: 'scanning' })
+    setTlcScanProgress({ completed: 0, total: nodes.length })
+    try {
+      const scannedAt = Date.now()
+      const perNode = await runWithConcurrency(nodes, 10, async (node: MonitoredNode) => {
+        const res = await scanNodeForTlcMonitor(node, tlcFirstSeenRef.current, scannedAt)
+        setTlcScanProgress((prev) => ({
+          completed: Math.min(prev.completed + 1, prev.total),
+          total: prev.total,
+        }))
+        return res
+      })
+      const scan: TlcMonitorScan = {
+        scannedAt,
+        nodes: perNode.map((r) => r.result),
+        channels: perNode.flatMap((r) => r.channels),
+      }
+      pruneTlcFirstSeen(tlcFirstSeenRef.current, scan)
+      setTlcScan(scan)
+      setTlcNow(Date.now())
+      setTlcScanState({ status: 'done' })
+      void runTlcOnchainChecks(
+        scan.channels.filter((c) => c.phase === 'forceClosing' || c.phase === 'settling'),
+        'auto',
+      )
+    } catch (err) {
+      setTlcScanState({
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      tlcScanRunningRef.current = false
+    }
+  }, [nodes, runTlcOnchainChecks])
+
+  const runTlcScanRef = useRef(runTlcScan)
+
+  useEffect(() => {
+    runTlcScanRef.current = runTlcScan
+  }, [runTlcScan])
+
+  useEffect(() => {
+    if (tlcSettings.autoRescanMinutes <= 0) return
+    const id = window.setTimeout(() => void runTlcScanRef.current(), 0)
+    return () => window.clearTimeout(id)
+  }, [tlcSettings.autoRescanMinutes])
+
+  useInterval(
+    () => void runTlcScan(),
+    tlcSettings.autoRescanMinutes > 0 ? tlcSettings.autoRescanMinutes * 60_000 : null,
+  )
+
+  useInterval(() => setTlcNow(Date.now()), tlcScan ? 30_000 : null)
+
+  const tlcWindowMs = tlcSettings.safetyWindowMinutes * 60_000
+  const tlcData = useMemo(
+    () => (tlcScan ? buildTlcMonitorData(tlcScan, tlcChecks, tlcNow, tlcWindowMs) : null),
+    [tlcScan, tlcChecks, tlcNow, tlcWindowMs],
+  )
+  const tlcCheckingCount = useMemo(
+    () => Object.values(tlcChecks).filter((c) => c.status === 'checking').length,
+    [tlcChecks],
+  )
+  const tlcDangerCount = tlcData?.counts.danger ?? 0
+
+  useEffect(() => {
+    document.title = tlcDangerCount > 0 ? `(${tlcDangerCount}) ⚠ ${BASE_DOCUMENT_TITLE}` : BASE_DOCUMENT_TITLE
+  }, [tlcDangerCount])
+
+  const openTlcMonitor = () => {
+    setViewMode('tlcMonitor')
+    if (!tlcScan) void runTlcScan()
+  }
+
+  const openCommitmentTrace = (channel: MonitoredChannel) => {
+    if (!channel.outpoint) return
+    const network = detectNetworkByChainHash(channel.chainHash ?? '')
+    setCtNetwork(network)
+    if (network === 'custom') setCtCustomRpcUrl(tlcCustomCkbRpcUrl)
+    setCtTxHash(channel.outpoint.txHash)
+    setCtTraceItems([])
+    setCtTraceStepCount(0)
+    setCtTraceError('')
+    setCtTraceState('idle')
+    setViewMode('commitmentTrace')
+  }
+
   return (
     <I18nContext.Provider value={t}>
     <div className="appShell">
@@ -1377,7 +1623,7 @@ function App() {
             </div>
           </div>
           <div className="mainActions">
-            <div style={{ display: 'flex', gap: 8, marginRight: 12 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginRight: 12 }}>
               <button
                 className={viewMode === 'dashboard' ? 'btn' : 'btn btnGhost'}
                 onClick={() => setViewMode('dashboard')}
@@ -1395,6 +1641,20 @@ function App() {
                 onClick={() => setViewMode('channelOutpointSearch')}
               >
                 Channel Outpoint
+              </button>
+              <button
+                className={viewMode === 'tlcMonitor' ? 'btn' : 'btn btnGhost'}
+                onClick={openTlcMonitor}
+              >
+                {t.tlcMonitorTab}
+                {tlcData && tlcData.counts.attention > 0 ? (
+                  <span
+                    className={`pill ${tlcData.counts.danger > 0 ? 'pillBad' : 'pillWarn'}`}
+                    style={{ padding: '1px 7px', fontSize: 10 }}
+                  >
+                    {tlcData.counts.attention}
+                  </span>
+                ) : null}
               </button>
               <button
                 className={viewMode === 'rpcDebug' ? 'btn' : 'btn btnGhost'}
@@ -3336,6 +3596,25 @@ function App() {
           <NetworkTopology selectedNode={selectedNode ?? null} lang={lang} />
         ) : null}
 
+        {viewMode === 'tlcMonitor' ? (
+          <TlcMonitorView
+            nodesCount={nodes.length}
+            scan={tlcScan}
+            data={tlcData}
+            now={tlcNow}
+            scanState={tlcScanState}
+            scanProgress={tlcScanProgress}
+            checkingCount={tlcCheckingCount}
+            settings={tlcSettings}
+            onSettingsChange={updateTlcSettings}
+            customCkbRpcUrl={tlcCustomCkbRpcUrl}
+            onCustomCkbRpcUrlChange={setTlcCustomCkbRpcUrl}
+            onScan={() => void runTlcScan()}
+            onCheck={(channels, mode) => void runTlcOnchainChecks(channels, mode)}
+            onTrace={openCommitmentTrace}
+          />
+        ) : null}
+
         {modalOpen ? (
           <AddNodeModal
             onClose={() => setModalOpen(false)}
@@ -4209,6 +4488,716 @@ function ParsedDataValue({ value }: { value: unknown }) {
   }
 
   return <span className="monoSmall">{String(value)}</span>
+}
+
+type TlcRowFilter = 'attention' | 'open' | 'offchain' | 'onchain' | 'all'
+type ForceCloseRowFilter = 'open' | 'all'
+
+const TLC_ROW_FILTERS: TlcRowFilter[] = ['attention', 'open', 'offchain', 'onchain', 'all']
+const FORCE_CLOSE_ROW_FILTERS: ForceCloseRowFilter[] = ['open', 'all']
+const TLC_ROWS_LIMIT = 500
+const FORCE_CLOSE_ROWS_LIMIT = 300
+const SMALL_BUTTON_STYLE: React.CSSProperties = { padding: '4px 10px', fontSize: 11, borderRadius: 10 }
+
+function filterTlcRows(rows: TlcRow[], filter: TlcRowFilter): TlcRow[] {
+  switch (filter) {
+    case 'attention':
+      return rows.filter((r) => isAttention(r.assessment.severity))
+    case 'open':
+      return rows.filter((r) => !r.assessment.resolved)
+    case 'offchain':
+      return rows.filter((r) => !r.assessment.resolved && !isOnchainTlcPhase(r.assessment.phase))
+    case 'onchain':
+      return rows.filter((r) => !r.assessment.resolved && isOnchainTlcPhase(r.assessment.phase))
+    default:
+      return rows
+  }
+}
+
+function severityPillClass(severity: TlcSeverity): string {
+  if (severity === 'danger') return 'pill pillBad'
+  if (severity === 'warning') return 'pill pillWarn'
+  if (severity === 'ok') return 'pill pillOk'
+  return 'pill'
+}
+
+function severityColor(severity?: TlcSeverity): string | undefined {
+  if (severity === 'danger') return 'var(--bad)'
+  if (severity === 'warning') return 'var(--warn)'
+  if (severity === 'ok') return 'var(--accent)'
+  return undefined
+}
+
+function severityRowStyle(severity: TlcSeverity): React.CSSProperties | undefined {
+  if (severity === 'danger') return { background: 'rgba(255,77,109,0.06)' }
+  if (severity === 'warning') return { background: 'rgba(255,209,102,0.05)' }
+  return undefined
+}
+
+function formatChannelAmount(value: string | null, isUdt: boolean): string {
+  if (value == null) return '—'
+  try {
+    const amount = BigInt(value)
+    return isUdt ? `${amount.toString()} UDT` : `${formatCkbBalance(amount)} CKB`
+  } catch {
+    return value
+  }
+}
+
+function unlockLabel(kind: CommitmentUnlockKind, initiator: ForceCloseInitiator, t: Translations): string {
+  if ((kind === 'localBalance' || kind === 'remoteBalance') && initiator) {
+    return (kind === 'localBalance') === (initiator === 'local') ? t.fcUnlockLabels.ownBalance : t.fcUnlockLabels.peerBalance
+  }
+  return t.fcUnlockLabels[kind]
+}
+
+function relativeExpiry(t: Translations, timeLeftMs: number): string {
+  return timeLeftMs > 0 ? t.tlcTimeLeft(formatDurationShort(timeLeftMs)) : t.tlcExpiredAgo(formatDurationShort(timeLeftMs))
+}
+
+function relativeClaimable(t: Translations, claimableAt: number, now: number): string {
+  return claimableAt > now
+    ? t.tlcClaimableIn(formatDurationShort(claimableAt - now))
+    : t.tlcClaimableSince(formatDurationShort(now - claimableAt))
+}
+
+function CopyHash({ value, left = 10, right = 8 }: { value: string; left?: number; right?: number }) {
+  return (
+    <span className="monoSmall ctHashCopy" title={value} onClick={() => copyToClipboard(value)}>
+      {shorten(value, left, right)}
+    </span>
+  )
+}
+
+function TlcStatTile({
+  label,
+  value,
+  note,
+  severity,
+}: {
+  label: string
+  value: React.ReactNode
+  note?: string
+  severity?: TlcSeverity
+}) {
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 4,
+        padding: '10px 12px',
+        border: '1px solid var(--line)',
+        borderRadius: 14,
+        background: 'rgba(6,8,14,0.35)',
+      }}
+    >
+      <div className="label">{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: severityColor(severity) ?? 'var(--ink)' }}>{value}</div>
+      {note ? <div className="smallNote">{note}</div> : null}
+    </div>
+  )
+}
+
+function TlcMonitorTlcRow({ row, now }: { row: TlcRow; now: number }) {
+  const t = useT()
+  const { channel, tlc, assessment } = row
+  const status = parseTlcStatus(tlc.status, t)
+  return (
+    <tr style={severityRowStyle(assessment.severity)}>
+      <td>
+        <span className={severityPillClass(assessment.severity)}>{t.tlcSeverityLabels[assessment.severity]}</span>
+      </td>
+      <td style={{ fontWeight: 600 }}>{channel.nodeName}</td>
+      <td>
+        <div style={{ display: 'grid', gap: 2 }}>
+          <CopyHash value={channel.channelId} />
+          <span className="dim" style={{ fontSize: 10 }}>{channel.stateName}</span>
+        </div>
+      </td>
+      <td>
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span className="monoSmall">
+            #{hexToNumberMaybe(tlc.id) ?? tlc.id} · {status.direction}
+          </span>
+          <span className="dim" style={{ fontSize: 10 }}>{status.label}</span>
+        </div>
+      </td>
+      <td className="monoSmall">{formatChannelAmount(tlc.amount, channel.isUdt)}</td>
+      <td>
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span className="monoSmall">{tlc.expiryMs != null ? new Date(tlc.expiryMs).toLocaleString() : '—'}</span>
+          {assessment.timeLeftMs != null && !assessment.resolved ? (
+            <span style={{ fontSize: 10, color: severityColor(assessment.severity) }}>
+              {relativeExpiry(t, assessment.timeLeftMs)}
+            </span>
+          ) : null}
+        </div>
+      </td>
+      <td className="monoSmall">{t.tlcPhaseLabels[assessment.phase]}</td>
+      <td>
+        <div style={{ display: 'grid', gap: 2 }}>
+          <span style={{ fontSize: 12, color: severityColor(assessment.severity) }}>
+            {assessment.reasons.map((r) => t.tlcReasonLabels[r]).join(' · ')}
+          </span>
+          {assessment.settledTxHash ? <CopyHash value={assessment.settledTxHash} /> : null}
+          {!assessment.resolved && assessment.phase === 'onchainSettling' && assessment.claimableAt != null ? (
+            <span className="dim" style={{ fontSize: 10 }}>{relativeClaimable(t, assessment.claimableAt, now)}</span>
+          ) : null}
+        </div>
+      </td>
+      <td>
+        <div style={{ display: 'grid', gap: 2 }}>
+          {tlc.paymentHash ? <CopyHash value={tlc.paymentHash} left={12} right={10} /> : <span className="dim">—</span>}
+          {tlc.forwardingChannelId || tlc.forwardingTlcId ? (
+            <span className="dim" style={{ fontSize: 10 }}>
+              {t.tlcForwarding} {tlc.forwardingChannelId ? shorten(tlc.forwardingChannelId, 10, 8) : ''}
+              {tlc.forwardingTlcId ? ` #${hexToNumberMaybe(tlc.forwardingTlcId) ?? tlc.forwardingTlcId}` : ''}
+            </span>
+          ) : null}
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function ForceCloseRemaining({ row }: { row: ForceCloseRow }) {
+  const t = useT()
+  const { channel, assessment } = row
+  const report = row.check?.report
+  if (report?.status !== 'settling') return <span className="dim">—</span>
+  const remaining = report.remaining
+  return (
+    <div className="monoSmall" style={{ display: 'grid', gap: 2 }}>
+      {remaining && channel.initiator ? (
+        <>
+          <span style={{ color: assessment.result === 'ownBalanceUnclaimed' ? 'var(--warn)' : undefined }}>
+            {t.fcOurBalance(formatChannelAmount(assessment.ourAmount, channel.isUdt))}
+          </span>
+          <span>{t.fcTheirBalance(formatChannelAmount(assessment.theirAmount, channel.isUdt))}</span>
+        </>
+      ) : remaining ? (
+        <>
+          <span>{t.fcLocalBalance(formatChannelAmount(remaining.localAmount, channel.isUdt))}</span>
+          <span>{t.fcRemoteBalance(formatChannelAmount(remaining.remoteAmount, channel.isUdt))}</span>
+        </>
+      ) : null}
+      {assessment.pendingHtlcs ? <span>{t.fcPendingHtlcs(assessment.pendingHtlcs)}</span> : null}
+      {report.liveCell ? (
+        <span className="dim" style={{ fontSize: 10 }}>
+          {t.fcLockedCapacity(formatChannelAmount(report.liveCell.capacity, false))}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+function ForceCloseSteps({ channel, report }: { channel: MonitoredChannel; report: CommitmentSettlementReport }) {
+  const t = useT()
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {report.steps.map((step, index) => (
+        <div key={step.txHash} className="ctBalanceBox" style={{ marginTop: 0 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'baseline' }}>
+            <span style={{ fontWeight: 600, fontSize: 12 }}>{t.fcStepLabel(index + 1)}</span>
+            <CopyHash value={step.txHash} left={12} right={10} />
+            {step.timestamp != null ? (
+              <span className="dim" style={{ fontSize: 11 }}>{new Date(step.timestamp).toLocaleString()}</span>
+            ) : null}
+          </div>
+          <div style={{ display: 'grid', gap: 4, marginTop: 6 }}>
+            {step.revocation ? (
+              <span className="monoSmall" style={{ color: 'var(--warn)' }}>{t.fcStepRevocation}</span>
+            ) : !step.parsed ? (
+              <span className="dim" style={{ fontSize: 11 }}>{t.fcStepUnparsed}</span>
+            ) : (
+              step.unlocks.map((unlock, i) => (
+                <span key={i} className="monoSmall">
+                  {unlockLabel(unlock.kind, channel.initiator, t)}
+                  {unlock.amount != null ? ` · ${formatChannelAmount(unlock.amount, channel.isUdt)}` : ''}
+                  {unlock.htlc ? ` · ${shorten(unlock.htlc.paymentHash, 10, 6)}` : ''}
+                </span>
+              ))
+            )}
+          </div>
+        </div>
+      ))}
+      {report.liveCell ? (
+        <div className="smallNote">
+          {t.fcLiveCell}: <CopyHash value={report.liveCell.txHash} left={12} right={10} />:{report.liveCell.index}
+          {' · '}
+          {formatChannelAmount(report.liveCell.capacity, false)}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ForceCloseMonitorRow({
+  row,
+  now,
+  expanded,
+  onToggle,
+  onCheck,
+  onTrace,
+}: {
+  row: ForceCloseRow
+  now: number
+  expanded: boolean
+  onToggle: () => void
+  onCheck: () => void
+  onTrace: () => void
+}) {
+  const t = useT()
+  const { channel, check, assessment } = row
+  const report = check?.report ?? null
+  const checking = check?.status === 'checking'
+  const hasDetails = report != null && (report.steps.length > 0 || report.liveCell != null)
+  return (
+    <>
+      <tr style={severityRowStyle(assessment.severity)}>
+        <td>
+          <span className={severityPillClass(assessment.severity)}>{t.tlcSeverityLabels[assessment.severity]}</span>
+        </td>
+        <td style={{ fontWeight: 600 }}>{channel.nodeName}</td>
+        <td>
+          <div style={{ display: 'grid', gap: 2 }}>
+            <CopyHash value={channel.channelId} />
+            <span className="dim" style={{ fontSize: 10 }}>
+              {channel.stateName}
+              {channel.stateFlags.length ? ` · ${channel.stateFlags.join('|')}` : ''}
+            </span>
+          </div>
+        </td>
+        <td>{t.fcInitiatorLabels[channel.initiator ?? 'unknown']}</td>
+        <td>
+          <div style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontWeight: 600, color: checking ? undefined : severityColor(assessment.ownSeverity) }}>
+              {checking ? t.fcChecking : t.fcResultLabels[assessment.result]}
+            </span>
+            {assessment.notes.length ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {assessment.notes.map((note) => (
+                  <span
+                    key={note}
+                    className={note === 'tlcDanger' ? 'pill pillBad' : note === 'flagLagging' ? 'pill' : 'pill pillWarn'}
+                    style={{ padding: '1px 6px', fontSize: 10 }}
+                  >
+                    {t.fcNoteLabels[note]}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {check?.error ? (
+              <span className="smallNote" style={{ color: 'var(--bad)' }}>{check.error}</span>
+            ) : null}
+            {check && check.checkedAt > 0 ? (
+              <span className="dim" style={{ fontSize: 10 }}>{t.fcCheckedAt(new Date(check.checkedAt).toLocaleString())}</span>
+            ) : null}
+          </div>
+        </td>
+        <td>
+          {report?.commitmentTxHash ? (
+            <div style={{ display: 'grid', gap: 2 }}>
+              <CopyHash value={report.commitmentTxHash} />
+              <span className="dim" style={{ fontSize: 10 }}>
+                {report.commitmentTimestamp != null
+                  ? new Date(report.commitmentTimestamp).toLocaleString()
+                  : t.fcTxStatus(report.commitmentTxStatus ?? '—')}
+              </span>
+            </div>
+          ) : channel.knownCommitmentTxHash ? (
+            <CopyHash value={channel.knownCommitmentTxHash} />
+          ) : (
+            <span className="dim">—</span>
+          )}
+        </td>
+        <td>
+          {assessment.claimableAt != null ? (
+            <div style={{ display: 'grid', gap: 2 }}>
+              <span className="monoSmall">{new Date(assessment.claimableAt).toLocaleString()}</span>
+              {report?.status === 'settling' ? (
+                <span className="dim" style={{ fontSize: 10 }}>{relativeClaimable(t, assessment.claimableAt, now)}</span>
+              ) : null}
+            </div>
+          ) : (
+            <span className="dim">—</span>
+          )}
+        </td>
+        <td>
+          <ForceCloseRemaining row={row} />
+        </td>
+        <td>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <button
+              className="btn btnGhost"
+              style={SMALL_BUTTON_STYLE}
+              onClick={onCheck}
+              disabled={checking || !channel.outpoint || !channel.chainHash}
+            >
+              {checking ? t.fcChecking : check ? t.fcRecheck : t.fcCheck}
+            </button>
+            <button className="btn btnGhost" style={SMALL_BUTTON_STYLE} onClick={onTrace} disabled={!channel.outpoint}>
+              {t.fcTrace}
+            </button>
+            {hasDetails ? (
+              <button className="btn btnGhost" style={SMALL_BUTTON_STYLE} onClick={onToggle}>
+                {expanded ? t.fcHideSteps : t.fcShowSteps(report.steps.length)}
+              </button>
+            ) : null}
+          </div>
+        </td>
+      </tr>
+      {expanded && hasDetails ? (
+        <tr>
+          <td colSpan={9} style={{ background: 'rgba(6,8,14,0.3)' }}>
+            <ForceCloseSteps channel={channel} report={report} />
+          </td>
+        </tr>
+      ) : null}
+    </>
+  )
+}
+
+function TlcMonitorView({
+  nodesCount,
+  scan,
+  data,
+  now,
+  scanState,
+  scanProgress,
+  checkingCount,
+  settings,
+  onSettingsChange,
+  customCkbRpcUrl,
+  onCustomCkbRpcUrlChange,
+  onScan,
+  onCheck,
+  onTrace,
+}: {
+  nodesCount: number
+  scan: TlcMonitorScan | null
+  data: TlcMonitorData | null
+  now: number
+  scanState: { status: 'idle' | 'scanning' | 'done' | 'error'; error?: string }
+  scanProgress: { completed: number; total: number }
+  checkingCount: number
+  settings: TlcMonitorSettings
+  onSettingsChange: (patch: Partial<TlcMonitorSettings>) => void
+  customCkbRpcUrl: string
+  onCustomCkbRpcUrlChange: (value: string) => void
+  onScan: () => void
+  onCheck: (channels: MonitoredChannel[], mode: TlcCheckMode) => void
+  onTrace: (channel: MonitoredChannel) => void
+}) {
+  const t = useT()
+  const [tlcFilter, setTlcFilter] = useState<TlcRowFilter>('open')
+  const [fcFilter, setFcFilter] = useState<ForceCloseRowFilter>('open')
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [windowDraft, setWindowDraft] = useState(() => String(settings.safetyWindowMinutes))
+
+  const tlcRows = useMemo(() => filterTlcRows(data?.tlcRows ?? [], tlcFilter), [data, tlcFilter])
+  const fcRows = useMemo(
+    () => (data?.forceCloseRows ?? []).filter((r) => fcFilter === 'all' || r.assessment.severity !== 'ok'),
+    [data, fcFilter],
+  )
+  const forceCloseChannels = useMemo(() => (data?.forceCloseRows ?? []).map((r) => r.channel), [data])
+  const counts = data?.counts ?? null
+  const failedNodes = scan?.nodes.filter((n) => !n.ok) ?? []
+  const hasCustomChain =
+    scan?.nodes.some((n) => n.chainHash != null && detectNetworkByChainHash(n.chainHash) === 'custom') ?? false
+  const tlcFilterCounts: Record<TlcRowFilter, number> = {
+    attention: (counts?.tlcDanger ?? 0) + (counts?.tlcWarning ?? 0),
+    open: counts?.tlcOpen ?? 0,
+    offchain: counts?.tlcOffchain ?? 0,
+    onchain: counts?.tlcOnchain ?? 0,
+    all: data?.tlcRows.length ?? 0,
+  }
+  const fcFilterCounts: Record<ForceCloseRowFilter, number> = {
+    open: counts?.forceCloseOpen ?? 0,
+    all: counts?.forceCloseTotal ?? 0,
+  }
+  const scanPercent = scanProgress.total ? Math.round((scanProgress.completed / scanProgress.total) * 100) : 0
+
+  const toggleExpanded = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const changeWindowDraft = (value: string) => {
+    setWindowDraft(value)
+    const minutes = Number(value)
+    if (Number.isFinite(minutes) && minutes > 0) onSettingsChange({ safetyWindowMinutes: minutes })
+  }
+
+  return (
+    <div className="layout">
+      <section className="card">
+        <div className="cardHeader">
+          <div className="cardTitle">{t.tlcMonitorTitle}</div>
+          <div className="muted">
+            {scanState.status === 'scanning'
+              ? t.tlcScanning(scanProgress.completed, scanProgress.total)
+              : scan
+                ? t.tlcLastScan(new Date(scan.scannedAt).toLocaleString())
+                : t.tlcNotScanned}
+          </div>
+        </div>
+        <div className="cardBody" style={{ display: 'grid', gap: 12 }}>
+          <div className="smallNote">{t.tlcMonitorHint}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
+            <div className="field">
+              <div className="label">{t.tlcAutoRescan}</div>
+              <select
+                className="input"
+                value={settings.autoRescanMinutes}
+                onChange={(e) => onSettingsChange({ autoRescanMinutes: Number(e.target.value) })}
+                style={{ padding: '6px 10px', fontSize: 12, width: 'auto' }}
+              >
+                {AUTO_RESCAN_OPTIONS.map((minutes) => (
+                  <option key={minutes} value={minutes}>
+                    {minutes > 0 ? t.tlcAutoRescanEvery(minutes) : t.tlcAutoRescanOff}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <div className="label">{t.tlcSafetyWindow}</div>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                value={windowDraft}
+                onChange={(e) => changeWindowDraft(e.target.value)}
+                onBlur={() => setWindowDraft(String(settings.safetyWindowMinutes))}
+                style={{ padding: '6px 10px', fontSize: 12, width: 120 }}
+              />
+            </div>
+            {hasCustomChain ? (
+              <div className="field" style={{ flex: '1 1 280px' }}>
+                <div className="label">{t.tlcCustomCkbRpc}</div>
+                <input
+                  className="input"
+                  value={customCkbRpcUrl}
+                  onChange={(e) => onCustomCkbRpcUrlChange(e.target.value)}
+                  placeholder={t.ckbRpcUrlPlaceholder}
+                  style={{ padding: '6px 10px', fontSize: 12 }}
+                />
+              </div>
+            ) : null}
+            <div className="spacer" />
+            <button
+              className="btn btnGhost"
+              onClick={() => onCheck(forceCloseChannels, 'refresh')}
+              disabled={!forceCloseChannels.length}
+            >
+              {t.tlcCheckOnchainAll}
+            </button>
+            <button className="btn" onClick={onScan} disabled={!nodesCount || scanState.status === 'scanning'}>
+              {t.tlcScanAll}
+            </button>
+          </div>
+          <div className="smallNote">
+            {t.tlcThresholdNote(settings.safetyWindowMinutes, WARNING_LEAD_MS / 60_000, CLAIM_GRACE_MS / 60_000)}
+          </div>
+          {scanState.status === 'scanning' ? (
+            <div>
+              <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                {t.scanProgress}{scanProgress.completed}/{scanProgress.total} ({scanPercent}%)
+              </div>
+              <div
+                style={{
+                  width: '100%',
+                  height: 8,
+                  borderRadius: 999,
+                  background: 'rgba(255,255,255,0.06)',
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    width: `${scanPercent}%`,
+                    height: '100%',
+                    background: 'linear-gradient(90deg, rgba(124,255,214,0.9), rgba(138,125,255,0.9))',
+                    transition: 'width 160ms ease',
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
+          {checkingCount > 0 ? (
+            <div className="muted" style={{ fontSize: 11 }}>{t.tlcCheckingOnchain(checkingCount)}</div>
+          ) : null}
+          {scanState.status === 'error' ? (
+            <div className="dangerRow">
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 12 }}>{t.scanFailed}</div>
+                <div className="smallNote">{scanState.error}</div>
+              </div>
+            </div>
+          ) : null}
+          {failedNodes.length ? (
+            <div className="dangerRow">
+              <div style={{ display: 'grid', gap: 4 }}>
+                <div style={{ fontWeight: 600, fontSize: 12 }}>{t.tlcNodeFailed}</div>
+                {failedNodes.map((n) => (
+                  <div key={n.nodeId} className="smallNote">
+                    {n.nodeName}: {n.error}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {counts ? (
+            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
+              <TlcStatTile label={t.tlcStatDanger} value={counts.danger} severity={counts.danger ? 'danger' : 'ok'} />
+              <TlcStatTile
+                label={t.tlcStatAttention}
+                value={counts.attention}
+                severity={counts.attention ? 'warning' : 'ok'}
+              />
+              <TlcStatTile
+                label={t.tlcStatOpenTlcs}
+                value={counts.tlcOpen}
+                note={t.tlcStatOpenSplit(counts.tlcOffchain, counts.tlcOnchain)}
+              />
+              <TlcStatTile
+                label={t.tlcStatForceClosed}
+                value={counts.forceCloseTotal}
+                note={t.tlcStatForceClosedSplit(counts.forceCloseOpen)}
+                severity={counts.forceCloseAttention ? 'warning' : undefined}
+              />
+              <TlcStatTile
+                label={t.tlcStatUnclaimed}
+                value={`${formatCkbBalance(counts.unclaimedShannons)} CKB`}
+                note={t.tlcStatUnclaimedSplit(counts.unclaimedChannels)}
+                severity={counts.unclaimedChannels ? 'warning' : undefined}
+              />
+              <TlcStatTile
+                label={t.tlcStatNodes}
+                value={scan?.nodes.length ?? 0}
+                note={t.tlcStatNodesSplit(counts.nodesFailed)}
+                severity={counts.nodesFailed ? 'warning' : undefined}
+              />
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="cardHeader">
+          <div className="cardTitle">{t.tlcTableTitle}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {TLC_ROW_FILTERS.map((filter) => (
+              <button
+                key={filter}
+                className={tlcFilter === filter ? 'btn' : 'btn btnGhost'}
+                style={SMALL_BUTTON_STYLE}
+                onClick={() => setTlcFilter(filter)}
+              >
+                {t.tlcFilterLabels[filter]} ({tlcFilterCounts[filter]})
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="cardBody">
+          {tlcRows.length ? (
+            <div style={{ maxHeight: 560, overflow: 'auto' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t.tlcColLevel}</th>
+                    <th>{t.tlcColNode}</th>
+                    <th>{t.tlcColChannel}</th>
+                    <th>{t.tlcColTlc}</th>
+                    <th>{t.tlcColAmount}</th>
+                    <th>{t.tlcColExpiry}</th>
+                    <th>{t.tlcColLocation}</th>
+                    <th>{t.tlcColAssessment}</th>
+                    <th>{t.tlcColPaymentHash}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tlcRows.slice(0, TLC_ROWS_LIMIT).map((row) => (
+                    <TlcMonitorTlcRow key={row.tlc.key} row={row} now={now} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="muted">{data ? t.tlcEmpty : t.tlcNotScanned}</div>
+          )}
+          {tlcRows.length > TLC_ROWS_LIMIT ? (
+            <div className="smallNote" style={{ marginTop: 8 }}>
+              {t.tlcRowsTruncated(TLC_ROWS_LIMIT, tlcRows.length)}
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="cardHeader">
+          <div className="cardTitle">{t.fcTableTitle}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {FORCE_CLOSE_ROW_FILTERS.map((filter) => (
+              <button
+                key={filter}
+                className={fcFilter === filter ? 'btn' : 'btn btnGhost'}
+                style={SMALL_BUTTON_STYLE}
+                onClick={() => setFcFilter(filter)}
+              >
+                {t.fcFilterLabels[filter]} ({fcFilterCounts[filter]})
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="cardBody">
+          {fcRows.length ? (
+            <div style={{ maxHeight: 640, overflow: 'auto' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t.tlcColLevel}</th>
+                    <th>{t.tlcColNode}</th>
+                    <th>{t.tlcColChannel}</th>
+                    <th>{t.fcColInitiator}</th>
+                    <th>{t.fcColResult}</th>
+                    <th>{t.fcColCommitment}</th>
+                    <th>{t.fcColClaimable}</th>
+                    <th>{t.fcColRemaining}</th>
+                    <th>{t.fcColActions}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fcRows.slice(0, FORCE_CLOSE_ROWS_LIMIT).map((row) => (
+                    <ForceCloseMonitorRow
+                      key={row.channel.key}
+                      row={row}
+                      now={now}
+                      expanded={expanded.has(row.channel.key)}
+                      onToggle={() => toggleExpanded(row.channel.key)}
+                      onCheck={() => onCheck([row.channel], 'force')}
+                      onTrace={() => onTrace(row.channel)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="muted">{data ? t.fcEmpty : t.tlcNotScanned}</div>
+          )}
+          {fcRows.length > FORCE_CLOSE_ROWS_LIMIT ? (
+            <div className="smallNote" style={{ marginTop: 8 }}>
+              {t.tlcRowsTruncated(FORCE_CLOSE_ROWS_LIMIT, fcRows.length)}
+            </div>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  )
 }
 
 export default App
