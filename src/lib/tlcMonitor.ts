@@ -88,8 +88,15 @@ function getChannelPhase(state: ChannelStateInfo): ChannelPhase {
 
 function getForceCloseInitiator(state: ChannelStateInfo, phase: ChannelPhase): ForceCloseInitiator {
   const flags = new Set(state.flags.map(normalizeToken))
+  if (flags.has('uncooperativeremote') && flags.has('uncooperativelocal')) return null
   if (flags.has('uncooperativeremote')) return 'remote'
   if (flags.has('uncooperativelocal') || phase === 'forceClosing') return 'local'
+  return null
+}
+
+export function ourWitnessBalanceKind(initiator: ForceCloseInitiator): 'localBalance' | 'remoteBalance' | null {
+  if (initiator === 'remote') return 'localBalance'
+  if (initiator === 'local') return 'remoteBalance'
   return null
 }
 
@@ -255,6 +262,7 @@ export function isOnchainTlcPhase(phase: TlcPhase): boolean {
 }
 
 export type TlcReason =
+  | 'removalHandled'
   | 'removedOffchain'
   | 'settledPreimage'
   | 'settledTimeout'
@@ -265,6 +273,11 @@ export type TlcReason =
   | 'commitmentMissing'
   | 'expired'
   | 'expiredOnchain'
+  | 'inboundExpired'
+  | 'inboundExpiredOnchain'
+  | 'inboundExpiring'
+  | 'outboundFunds'
+  | 'unknownDirection'
   | 'awaitingConfirmation'
   | 'awaitingDelay'
   | 'awaitingSettlement'
@@ -282,6 +295,97 @@ export type TlcAssessment = {
   timeLeftMs: number | null
   claimableAt: number | null
   settledTxHash: string | null
+  forwarding: ForwardingEvidence | null
+}
+
+type ForwardingEvidence =
+  | { outcome: 'paid' | 'refunded'; txHash: string; amount: string; isUdt: boolean }
+  | { outcome: 'pending' | 'locked' | 'removed' | 'awaitingTrace' | 'checkFailed' | 'unmatched' | 'unproven' }
+
+type OutboundLeg = { channel: MonitoredChannel; tlc: MonitoredTlc }
+
+function hasForwardingLink(tlc: MonitoredTlc): boolean {
+  return tlc.direction === 'inbound' && (tlc.forwardingChannelId != null || tlc.forwardingTlcId != null)
+}
+
+function canonicalTlcId(id: string | null): string | null {
+  return id != null && /^(0x[\da-f]+|\d+)$/i.test(id) ? BigInt(id).toString() : null
+}
+
+function legKey(channel: MonitoredChannel, channelId: string | null, tlcId: string | null): string | null {
+  const id = canonicalTlcId(tlcId)
+  return channelId && id != null ? JSON.stringify([channel.nodeId, channel.chainHash?.toLowerCase(), channelId.toLowerCase(), id]) : null
+}
+
+function pairForwardingLegs(channels: MonitoredChannel[]): Map<MonitoredTlc, OutboundLeg | null> {
+  const outgoing = new Map<string, OutboundLeg | null>()
+  for (const channel of channels) {
+    for (const tlc of channel.tlcs) {
+      if (tlc.direction !== 'outbound') continue
+      const key = legKey(channel, channel.channelId, tlc.id)
+      if (key) outgoing.set(key, outgoing.has(key) ? null : { channel, tlc })
+    }
+  }
+  const pairs = new Map<MonitoredTlc, OutboundLeg | null>()
+  const linkedFrom = new Map<OutboundLeg, MonitoredTlc>()
+  for (const channel of channels) {
+    for (const tlc of channel.tlcs) {
+      if (!hasForwardingLink(tlc)) continue
+      const key = legKey(channel, tlc.forwardingChannelId, tlc.forwardingTlcId)
+      const leg = key ? outgoing.get(key) : null
+      const inboundId = canonicalTlcId(tlc.id)
+      if (!leg || !/^0x[\da-f]{64}$/i.test(tlc.paymentHash) || leg.tlc.paymentHash.toLowerCase() !== tlc.paymentHash.toLowerCase() ||
+        (leg.tlc.forwardingChannelId != null && leg.tlc.forwardingChannelId.toLowerCase() !== channel.channelId.toLowerCase()) ||
+        (leg.tlc.forwardingTlcId != null && (inboundId == null || canonicalTlcId(leg.tlc.forwardingTlcId) !== inboundId))) {
+        pairs.set(tlc, null)
+        continue
+      }
+      const previous = linkedFrom.get(leg)
+      if (previous) {
+        pairs.set(previous, null)
+        pairs.set(tlc, null)
+      } else {
+        linkedFrom.set(leg, tlc)
+        pairs.set(tlc, leg)
+      }
+    }
+  }
+  return pairs
+}
+
+export function autoOnchainChannels(channels: MonitoredChannel[]): MonitoredChannel[] {
+  const linked = new Set<MonitoredChannel>()
+  for (const leg of pairForwardingLegs(channels).values()) if (leg) linked.add(leg.channel)
+  return channels.filter((c) => c.phase === 'forceClosing' || c.phase === 'settling' || (c.phase === 'settled' && linked.has(c)))
+}
+
+function checkForwardingLeg(leg: OutboundLeg | null, checks: Record<string, OnchainCheck>): ForwardingEvidence {
+  if (!leg) return { outcome: 'unmatched' }
+  const { channel, tlc } = leg
+  const key = checkKeyOf(channel)
+  const check = key ? checks[key] : null
+  if (check?.status === 'error') return { outcome: 'checkFailed' }
+  const report = check?.report
+  if (!report) {
+    if (isForceClosePhase(channel.phase)) return { outcome: key ? 'awaitingTrace' : 'unproven' }
+    if (tlc.progress !== 'active') return { outcome: 'removed' }
+    return { outcome: channel.phase === 'closed' ? 'unproven' : 'pending' }
+  }
+  const first = report.steps[0]
+  if (!first?.parsed || first.revocation || channel.initiator == null) return { outcome: 'unproven' }
+  const matches = (h: CommitmentHtlc, t: MonitoredTlc) =>
+    (h.paymentHash.length === 42 || h.paymentHash.length === 66) && htlcMatchesTlc(h, t) &&
+    h.offered === (channel.initiator === 'remote') && t.expiryMs != null && Math.floor(t.expiryMs / 1000) * 1000 === h.expiryMs
+  const candidates = first.htlcs.filter((h) => matches(h, tlc))
+  if (candidates.length !== 1 || channel.tlcs.some((t) => t !== tlc && t.direction === 'outbound' && matches(candidates[0], t))) {
+    return { outcome: 'unproven' }
+  }
+  if (report.remaining?.htlcs.some((h) => matches(h, tlc))) return { outcome: 'locked' }
+  const receipts = report.steps.filter((s) => s.parsed && !s.revocation).flatMap((s) =>
+    s.unlocks.filter((u) => (u.kind === 'htlcPreimage' || u.kind === 'htlcTimeout') && u.htlc && matches(u.htlc, tlc))
+      .map((u) => ({ kind: u.kind, txHash: s.txHash })))
+  if (receipts.length !== 1) return { outcome: 'unproven' }
+  return { outcome: receipts[0].kind === 'htlcPreimage' ? 'paid' : 'refunded', txHash: receipts[0].txHash, amount: tlc.amount, isUdt: channel.isUdt }
 }
 
 function claimableAtOf(report: CommitmentSettlementReport | null): number | null {
@@ -351,6 +455,7 @@ export function assessTlc(
   report: CommitmentSettlementReport | null,
   now: number,
   windowMs: number,
+  forwarding: ForwardingEvidence | null = hasForwardingLink(tlc) ? { outcome: 'unmatched' } : null,
 ): TlcAssessment {
   const phase = tlcPhaseOf(channel, report)
   const timeLeftMs = tlc.expiryMs != null ? tlc.expiryMs - now : null
@@ -363,10 +468,18 @@ export function assessTlc(
     timeLeftMs,
     claimableAt,
     settledTxHash: null,
+    forwarding,
   })
+  const expiryVerdict = (level: 'danger' | 'warning', reason: 'expired' | 'expiredOnchain' | 'pastThreshold' | 'nearThreshold') => {
+    if (tlc.direction !== 'inbound') {
+      return verdict(level, [reason, tlc.direction === 'outbound' ? 'outboundFunds' : 'unknownDirection'])
+    }
+    const inboundReason = reason === 'expired' ? 'inboundExpired' : reason === 'expiredOnchain' ? 'inboundExpiredOnchain' : 'inboundExpiring'
+    return verdict(forwarding && forwarding.outcome !== 'refunded' ? 'warning' : 'info', [inboundReason])
+  }
 
-  if (tlc.progress === 'removed') return verdict('ok', ['removedOffchain'], true)
-  const unlock = report ? findTlcUnlock(report, tlc) : null
+  const stillLocked = report?.remaining?.htlcs.some((htlc) => htlcMatchesTlc(htlc, tlc))
+  const unlock = report && !stillLocked ? findTlcUnlock(report, tlc) : null
   if (unlock) {
     return {
       ...verdict('ok', [unlock.kind === 'htlcPreimage' ? 'settledPreimage' : 'settledTimeout'], true),
@@ -374,52 +487,57 @@ export function assessTlc(
       settledTxHash: unlock.txHash,
     }
   }
+  if (tlc.progress === 'removed' && !stillLocked) return verdict('ok', ['removedOffchain'], true)
   if (phase === 'closed') return verdict('ok', ['closedChannel'], true)
   if (phase === 'onchainSettled') {
     return report?.status === 'revoked' ? verdict('info', ['revoked'], true) : verdict('ok', ['settledOnchain'], true)
   }
+  if (phase === 'onchainConfirming' && (report?.commitmentTxStatus === 'unknown' || report?.commitmentTxStatus === 'rejected')) {
+    return verdict('danger', ['commitmentMissing'])
+  }
+  if (phase === 'onchainSettling' && report && !stillLocked && tlcInCommitment(report, tlc) === false) {
+    return verdict('info', ['notInCommitment'], true)
+  }
+  if (tlc.progress === 'removing' && !stillLocked) {
+    return phase === 'stale'
+      ? verdict('warning', ['removalHandled', 'staleChannel'])
+      : verdict('info', ['removalHandled'], true)
+  }
   if (phase === 'onchainConfirming') {
-    if (report?.commitmentTxStatus === 'unknown' || report?.commitmentTxStatus === 'rejected') {
-      return verdict('danger', ['commitmentMissing'])
-    }
-    if (timeLeftMs != null && timeLeftMs <= 0) return verdict('danger', ['expired'])
+    if (timeLeftMs != null && timeLeftMs <= 0) return expiryVerdict('danger', 'expired')
     return verdict('info', ['awaitingConfirmation'])
   }
   if (phase === 'onchainSettling') {
-    if (report && tlcInCommitment(report, tlc) === false) return verdict('info', ['notInCommitment'], true)
     if (tlc.expiryMs != null && tlc.expiryMs <= now) {
       const overdueMs = now - Math.max(tlc.expiryMs, claimableAt ?? 0)
-      if (overdueMs > windowMs) return verdict('danger', ['expiredOnchain'])
-      if (overdueMs > 0) return verdict('warning', ['expiredOnchain'])
+      if (overdueMs > windowMs) return expiryVerdict('danger', 'expiredOnchain')
+      if (overdueMs > 0) return expiryVerdict('warning', 'expiredOnchain')
       return verdict('info', ['awaitingDelay'])
     }
     if (claimableAt != null && now < claimableAt) return verdict('info', ['awaitingDelay'])
     return verdict('info', ['awaitingSettlement'])
   }
 
-  let severity: TlcSeverity = 'ok'
-  const reasons: TlcReason[] = []
+  let assessment = verdict('ok', [])
   if (timeLeftMs != null) {
     if (timeLeftMs <= 0) {
-      severity = 'danger'
-      reasons.push('expired')
+      assessment = expiryVerdict('danger', 'expired')
     } else if (timeLeftMs < windowMs) {
-      severity = 'danger'
-      reasons.push('pastThreshold')
+      assessment = expiryVerdict('danger', 'pastThreshold')
     } else if (timeLeftMs < windowMs + WARNING_LEAD_MS) {
-      severity = 'warning'
-      reasons.push('nearThreshold')
+      assessment = expiryVerdict('warning', 'nearThreshold')
     }
   }
   if (phase === 'stale') {
-    severity = maxSeverity(severity, 'warning')
-    reasons.push('staleChannel')
+    assessment.severity = maxSeverity(assessment.severity, 'warning')
+    assessment.reasons.push('staleChannel')
   }
   if (now - tlc.firstSeenAt > LONG_PENDING_MS) {
-    severity = maxSeverity(severity, 'info')
-    reasons.push('longPending')
+    assessment.severity = maxSeverity(assessment.severity, 'info')
+    assessment.reasons.push('longPending')
   }
-  return verdict(severity, reasons.length ? reasons : ['healthy'])
+  if (!assessment.reasons.length) assessment.reasons.push('healthy')
+  return assessment
 }
 
 export type ForceCloseResult =
@@ -430,6 +548,7 @@ export type ForceCloseResult =
   | 'awaitingDelay'
   | 'awaitingSettlement'
   | 'ownBalanceUnclaimed'
+  | 'peerBalanceUnclaimed'
   | 'settlementNotStarted'
   | 'settled'
   | 'revoked'
@@ -448,6 +567,7 @@ const FORCE_CLOSE_RESULT_ORDER: ForceCloseResult[] = [
   'checkFailed',
   'confirming',
   'awaitingDelay',
+  'peerBalanceUnclaimed',
   'awaitingSettlement',
   'notChecked',
   'settled',
@@ -463,6 +583,8 @@ export type ForceCloseAssessment = {
   claimableAt: number | null
   ourAmount: string | null
   theirAmount: string | null
+  ourBalanceClaimed: boolean
+  theirBalanceClaimed: boolean
   pendingHtlcs: number
 }
 
@@ -479,6 +601,8 @@ export function assessForceClose(
   let ownSeverity: TlcSeverity
   let ourAmount: string | null = null
   let theirAmount: string | null = null
+  let ourBalanceClaimed = false
+  let theirBalanceClaimed = false
   let pendingHtlcs = 0
 
   if (!report) {
@@ -496,15 +620,23 @@ export function assessForceClose(
     const remaining = report.remaining
     if (remaining) {
       pendingHtlcs = remaining.htlcs.length
-      if (channel.initiator) {
-        ourAmount = channel.initiator === 'local' ? remaining.localAmount : remaining.remoteAmount
-        theirAmount = channel.initiator === 'local' ? remaining.remoteAmount : remaining.localAmount
+      const ourKind = ourWitnessBalanceKind(channel.initiator)
+      if (ourKind) {
+        ourAmount = ourKind === 'localBalance' ? remaining.localAmount : remaining.remoteAmount
+        theirAmount = ourKind === 'localBalance' ? remaining.remoteAmount : remaining.localAmount
+        const hasClaim = (kind: 'localBalance' | 'remoteBalance') => report.steps.some((step) =>
+          step.parsed && step.unlocks.some((u) => u.kind === kind && (toBigInt(u.amount) ?? 0n) > 0n))
+        ourBalanceClaimed = toBigInt(ourAmount) === 0n && hasClaim(ourKind)
+        theirBalanceClaimed = toBigInt(theirAmount) === 0n && hasClaim(ourKind === 'localBalance' ? 'remoteBalance' : 'localBalance')
       }
     }
     const graceOver = claimableAt != null && now > claimableAt + CLAIM_GRACE_MS
     if (graceOver && (toBigInt(ourAmount) ?? 0n) > 0n) {
       result = 'ownBalanceUnclaimed'
       ownSeverity = 'warning'
+    } else if (graceOver && toBigInt(ourAmount) === 0n && (toBigInt(theirAmount) ?? 0n) > 0n) {
+      result = 'peerBalanceUnclaimed'
+      ownSeverity = 'info'
     } else if (graceOver && !report.steps.length) {
       result = 'settlementNotStarted'
       ownSeverity = 'warning'
@@ -548,6 +680,8 @@ export function assessForceClose(
     claimableAt,
     ourAmount,
     theirAmount,
+    ourBalanceClaimed,
+    theirBalanceClaimed,
     pendingHtlcs,
   }
 }
@@ -635,14 +769,15 @@ export function buildTlcMonitorData(
 ): TlcMonitorData {
   const tlcRows: TlcRow[] = []
   const forceCloseRows: ForceCloseRow[] = []
+  const pairs = pairForwardingLegs(scan.channels)
   for (const channel of scan.channels) {
     const key = checkKeyOf(channel)
     const check = key ? checks[key] ?? null : null
-    const rows = channel.tlcs.map((tlc) => ({
-      channel,
-      tlc,
-      assessment: assessTlc(channel, tlc, check?.report ?? null, now, windowMs),
-    }))
+    const rows = channel.tlcs.map((tlc) => {
+      const leg = pairs.get(tlc)
+      const forwarding = leg === undefined ? null : checkForwardingLeg(leg, checks)
+      return { channel, tlc, assessment: assessTlc(channel, tlc, check?.report ?? null, now, windowMs, forwarding) }
+    })
     tlcRows.push(...rows)
     if (isForceClosePhase(channel.phase)) {
       forceCloseRows.push({

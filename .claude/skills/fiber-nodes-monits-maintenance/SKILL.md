@@ -250,7 +250,8 @@ When changing how often or when data is refreshed:
 2. **On-chain parsing**
    - Settlement witnesses carry a 20-byte payment-hash prefix, or 32 bytes when the 58-byte lock args have features bit 0 set (`parseWitnessV2(hex, paymentHashLen)`).
    - TLCs are matched to HTLCs by hash prefix plus amount.
-   - Witness local/remote values are from the broadcaster's side. `assessForceClose` maps them to ours/theirs by `initiator`.
+   - Witness slots are not the monitoring node's local/remote: the broadcaster's balance uses 0xFE (wire remote), the other party's uses 0xFF (wire local). Keep the shared report node-neutral and use `ourWitnessBalanceKind` for both remaining amounts and unlock labels.
+   - Expiry alone primarily affects the offering side. Keep inbound TLCs open with a peer-risk notice; flag forwarding exposure separately. Do not downgrade unrelated channel or commitment failures.
 
 3. **Changing rules or states**
    - Change thresholds in the `tlcMonitor.ts` constants.

@@ -464,6 +464,99 @@
   border-color: rgba(138, 125, 255, 0.30);
 }
 
+.ctTraceItem:target {
+  border-color: var(--accent);
+  scroll-margin-top: 1rem;
+}
+
+.ctChannelRecords {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ctChannelRecord summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.ctChannelTools, .ctTraceLinks {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.ctChannelTools {
+  margin: 12px 0 8px;
+}
+
+.ctChannelTools .btn {
+  margin-inline-start: auto;
+  padding: 4px 10px;
+}
+
+.ctTraceLinks a, .ctChannelFields strong {
+  color: var(--accent);
+}
+
+.ctChannelFields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+  gap: 8px 18px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ctChannelFields > div {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.ctChannelFields dt {
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.ctChannelFields dd, .ctChannelFields pre {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.ctChannelFields pre {
+  max-height: 14rem;
+  overflow: auto;
+  font: inherit;
+}
+
+.ctChannelTlcs {
+  grid-column: 1 / -1;
+}
+
+.ctFieldCopy {
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: copy;
+}
+
+.ctFieldCopy:hover, .ctFieldCopy:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.ctChannelFields .ctFieldCopy {
+  display: block;
+}
+
 .ctTraceHeader {
   display: flex;
   align-items: center;

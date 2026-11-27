@@ -324,6 +324,7 @@ type CellInfo = {
   args: string
   capacity: bigint
   lock?: { code_hash: string; hash_type: string; args: string }
+  outpoint?: { txHash: string; index: number }
   udt_args?: string
   udt_capacity?: bigint
 }
@@ -359,7 +360,12 @@ async function getTxMessage(rpcUrl: string, commitmentCodeHash: string, txHash: 
     if (!prevTxData) throw new Error(`Previous tx not found: ${prevTxHash}`)
     const prevOutput = prevTxData.transaction.outputs[outputIndex]
     const prevOutputData = prevTxData.transaction.outputs_data[outputIndex]
-    const cell: CellInfo = { args: prevOutput.lock.args, capacity: BigInt(prevOutput.capacity), lock: prevOutput.lock }
+    const cell: CellInfo = {
+      args: prevOutput.lock.args,
+      capacity: BigInt(prevOutput.capacity),
+      lock: prevOutput.lock,
+      outpoint: { txHash: prevTxHash.toLowerCase(), index: outputIndex },
+    }
     if (prevOutput.type) {
       cell.udt_args = prevOutput.type.args
       cell.udt_capacity = toIntFromBigUint128Le(prevOutputData)
@@ -387,7 +393,7 @@ async function getTxMessage(rpcUrl: string, commitmentCodeHash: string, txHash: 
 
   const inputCells = await Promise.all(inputPromises)
   const outputCells: CellInfo[] = tx.outputs.map((output, i) => {
-    const cell: CellInfo = { args: output.lock.args, capacity: BigInt(output.capacity) }
+    const cell: CellInfo = { args: output.lock.args, capacity: BigInt(output.capacity), lock: output.lock }
     if (output.type) {
       cell.udt_args = output.type.args
       cell.udt_capacity = toIntFromBigUint128Le(tx.outputs_data[i])
@@ -977,6 +983,16 @@ export function formatCkbBalance(shannons: bigint): string {
   let fractionStr = fractionShannons.toString().padStart(8, '0')
   fractionStr = fractionStr.replace(/0+$/, '')
   return `${wholeCkb.toString()}.${fractionStr}`
+}
+
+export function formatChannelAmount(value: string | null, isUdt: boolean): string {
+  if (value == null) return '—'
+  try {
+    const amount = BigInt(value)
+    return isUdt ? `${amount.toString()} UDT` : `${formatCkbBalance(amount)} CKB`
+  } catch {
+    return value
+  }
 }
 
 const NETWORK_PREFIX: Record<string, string> = { testnet: 'ckt', mainnet: 'ckb' }

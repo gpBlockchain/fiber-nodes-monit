@@ -4,8 +4,10 @@ import { copyToClipboard } from './lib/clipboard'
 import { hexToNumberMaybe, formatJson, isHttpUrl, safeUrlLabel, shorten } from './lib/format'
 import { loadNodes, saveNodes, type MonitoredNode } from './lib/storage'
 import { callFiberRpc } from './lib/rpc'
+import { addressPresenceInTrace, buildTraceEvidence, matchChannelToTrace, type AddressPresence } from './lib/traceAssociation'
 import { loadLang, saveLang, translations, I18nContext, useT, type Lang, type Translations } from './lib/i18n'
 import NetworkTopology from './components/NetworkTopology'
+import RelatedChannelRecords, { type RelatedChannel } from './components/RelatedChannelRecords'
 import {
   resolveNetworkConfig,
   getLnTxTrace,
@@ -20,6 +22,7 @@ import {
   getAllCells,
   computeAccountBalance,
   formatCkbBalance,
+  formatChannelAmount,
   lockScriptToAddress,
   traceCommitmentSettlement,
   type CkbNetwork,
@@ -35,6 +38,7 @@ import {
   CLAIM_GRACE_MS,
   ONCHAIN_RECHECK_MS,
   WARNING_LEAD_MS,
+  autoOnchainChannels,
   buildMonitoredChannel,
   buildTlcMonitorData,
   checkKeyOf,
@@ -43,8 +47,10 @@ import {
   isFinalReport,
   isOnchainTlcPhase,
   loadTlcMonitorSettings,
+  ourWitnessBalanceKind,
   pruneTlcFirstSeen,
   saveTlcMonitorSettings,
+  parseChannelOutpoint,
   type ForceCloseInitiator,
   type ForceCloseRow,
   type MonitoredChannel,
@@ -218,6 +224,19 @@ type ChannelOutpointSearchMatch = {
   remoteBalance: string
   enabled: boolean
   createdAt: string
+}
+
+type TraceAddressMatch = {
+  nodeId: string
+  nodeName: string
+  address: string
+  presence: AddressPresence
+}
+
+function fundingLockOf(nodeInfo: JsonObj): { code_hash: string; hash_type: string; args: string } | null {
+  const lock = asObj(nodeInfo.default_funding_lock_script)
+  if (typeof lock.code_hash !== 'string' || typeof lock.hash_type !== 'string' || typeof lock.args !== 'string') return null
+  return { code_hash: lock.code_hash, hash_type: lock.hash_type, args: lock.args }
 }
 
 
@@ -481,6 +500,12 @@ function App() {
   const [ctTraceError, setCtTraceError] = useState('')
   const [ctTraceItems, setCtTraceItems] = useState<TraceItem[]>([])
   const [ctTraceStepCount, setCtTraceStepCount] = useState(0)
+  const [ctRelatedState, setCtRelatedState] = useState<'idle' | 'searching' | 'done'>('idle')
+  const [ctRelatedChannels, setCtRelatedChannels] = useState<RelatedChannel[]>([])
+  const [ctTraceAddressMatches, setCtTraceAddressMatches] = useState<TraceAddressMatch[]>([])
+  const [ctRelatedFailedNodes, setCtRelatedFailedNodes] = useState(0)
+  const ctRelatedRequestRef = useRef(0)
+  const ctTraceRequestRef = useRef(0)
   const [ctManualVersion, setCtManualVersion] = useState<'1' | '2'>('2')
   const [ctManualLockArgs, setCtManualLockArgs] = useState('')
   const [ctManualWitness, setCtManualWitness] = useState('')
@@ -1450,7 +1475,7 @@ function App() {
       setTlcNow(Date.now())
       setTlcScanState({ status: 'done' })
       void runTlcOnchainChecks(
-        scan.channels.filter((c) => c.phase === 'forceClosing' || c.phase === 'settling'),
+        autoOnchainChannels(scan.channels),
         'auto',
       )
     } catch (err) {
@@ -1512,7 +1537,68 @@ function App() {
     setCtTraceStepCount(0)
     setCtTraceError('')
     setCtTraceState('idle')
+    ctTraceRequestRef.current += 1
+    ctRelatedRequestRef.current += 1
+    setCtRelatedChannels([])
+    setCtTraceAddressMatches([])
+    setCtRelatedState('idle')
+    setCtRelatedFailedNodes(0)
     setViewMode('commitmentTrace')
+  }
+
+  const findRelatedChannels = async (rawHash: string, network: CkbNetwork, trace: TraceItem[] = []) => {
+    const hash = rawHash.trim().toLowerCase()
+    if (!/^0x[0-9a-f]{64}$/.test(hash) || !nodes.length) return
+    const request = ++ctRelatedRequestRef.current
+    const evidence = buildTraceEvidence(hash, trace)
+    setCtRelatedState('searching')
+    setCtRelatedChannels([])
+    setCtTraceAddressMatches([])
+    setCtRelatedFailedNodes(0)
+    const results = await runWithConcurrency(nodes, 10, async (node) => {
+      try {
+        const [info, channelResult] = await Promise.all([
+          callFiberRpc<JsonObj>(node, 'node_info'),
+          callFiberRpc<{ channels: unknown[] }>(node, 'list_channels', { include_closed: true }),
+        ])
+        const nodeNetwork = detectNetworkByChainHash(getString(asObj(info), 'chain_hash') ?? '')
+        if (network !== 'custom' && nodeNetwork !== network) return { channels: [] as RelatedChannel[], addressMatch: null, failed: false }
+        const fundingLock = fundingLockOf(asObj(info))
+        const fundingAddress = fundingLock ? lockScriptToAddress(fundingLock, nodeNetwork) : null
+        const presence = fundingLock && trace.length ? addressPresenceInTrace(fundingLock, evidence) : null
+        const addressMatch: TraceAddressMatch | null = fundingAddress && presence
+          ? { nodeId: node.id, nodeName: node.name, address: fundingAddress, presence }
+          : null
+        const channels: RelatedChannel[] = []
+        for (const raw of Array.isArray(channelResult?.channels) ? channelResult.channels : []) {
+          const channel = asObj(raw)
+          const outpoint = parseChannelOutpoint(channel.channel_outpoint)
+          const knownHashes = [
+            getString(channel, 'shutdown_transaction_hash'),
+            getString(channel, 'latest_commitment_transaction_hash'),
+          ]
+          const matchKind = matchChannelToTrace(outpoint, knownHashes, evidence)
+          if (!matchKind) continue
+          channels.push({
+            nodeId: node.id,
+            nodeName: node.name,
+            record: channel,
+            outpoint,
+            knownHashes,
+            fundingAddress,
+            matchKind,
+          })
+        }
+        return { channels, addressMatch, failed: false }
+      } catch {
+        return { channels: [] as RelatedChannel[], addressMatch: null, failed: true }
+      }
+    })
+    if (request !== ctRelatedRequestRef.current) return
+    setCtRelatedChannels(results.flatMap((result) => result.channels))
+    setCtTraceAddressMatches(results.flatMap((result) => result.addressMatch ? [result.addressMatch] : []))
+    setCtRelatedFailedNodes(results.filter((result) => result.failed).length)
+    setCtRelatedState('done')
   }
 
   return (
@@ -3110,13 +3196,39 @@ function App() {
         {viewMode === 'commitmentTrace' ? (
           <CommitmentTraceView
             network={ctNetwork}
-            onNetworkChange={setCtNetwork}
+            onNetworkChange={(network) => {
+              ctTraceRequestRef.current += 1
+              ctRelatedRequestRef.current += 1
+              setCtNetwork(network)
+              setCtTraceItems([])
+              setCtTraceState('idle')
+              setCtRelatedChannels([])
+              setCtTraceAddressMatches([])
+              setCtRelatedState('idle')
+              setCtRelatedFailedNodes(0)
+            }}
             customRpcUrl={ctCustomRpcUrl}
             onCustomRpcUrlChange={setCtCustomRpcUrl}
             customCodeHash={ctCustomCodeHash}
             onCustomCodeHashChange={setCtCustomCodeHash}
             txHash={ctTxHash}
-            onTxHashChange={setCtTxHash}
+            onTxHashChange={(value) => {
+              ctTraceRequestRef.current += 1
+              ctRelatedRequestRef.current += 1
+              setCtTxHash(value)
+              setCtTraceItems([])
+              setCtTraceState('idle')
+              setCtRelatedChannels([])
+              setCtTraceAddressMatches([])
+              setCtRelatedState('idle')
+              setCtRelatedFailedNodes(0)
+            }}
+            relatedState={ctRelatedState}
+            relatedChannels={ctRelatedChannels}
+            traceAddressMatches={ctTraceAddressMatches}
+            relatedFailedNodes={ctRelatedFailedNodes}
+            monitoredNodeCount={nodes.length}
+            onFindRelated={() => void findRelatedChannels(ctTxHash, ctNetwork, ctTraceItems)}
             traceState={ctTraceState}
             traceError={ctTraceError}
             traceItems={ctTraceItems}
@@ -3144,12 +3256,14 @@ function App() {
               if (!hash) return
               const cfg = resolveNetworkConfig(ctNetwork, ctCustomRpcUrl.trim(), ctCustomCodeHash.trim())
               if (!cfg.rpcUrl) return
+              const traceRequest = ++ctTraceRequestRef.current
               setCtTraceState('pending')
               setCtTraceError('')
               setCtTraceItems([])
               setCtTraceStepCount(0)
               try {
                 const { lockArgs, witness, version } = await fetchAndParseTx(cfg.rpcUrl, hash)
+                if (traceRequest !== ctTraceRequestRef.current) return
                 setCtManualLockArgs(lockArgs)
                 setCtManualWitness(witness)
                 setCtManualVersion(version === '1' ? '1' : '2')
@@ -3161,11 +3275,15 @@ function App() {
                   setCtParseError('')
                 } catch { /* manual parse can still work */ }
                 const trace = await getLnTxTrace(cfg.rpcUrl, cfg.commitmentCodeHash, hash, (n) => setCtTraceStepCount(n))
+                if (traceRequest !== ctTraceRequestRef.current) return
                 setCtTraceItems(trace)
                 setCtTraceState('done')
+                void findRelatedChannels(hash, ctNetwork, trace)
               } catch (e) {
+                if (traceRequest !== ctTraceRequestRef.current) return
                 setCtTraceError(e instanceof Error ? e.message : String(e))
                 setCtTraceState('error')
+                void findRelatedChannels(hash, ctNetwork)
               }
             }}
             onManualParse={() => {
@@ -4014,6 +4132,7 @@ function CommitmentTraceView({
   customRpcUrl, onCustomRpcUrlChange,
   customCodeHash, onCustomCodeHashChange,
   txHash, onTxHashChange,
+  relatedState, relatedChannels, traceAddressMatches, relatedFailedNodes, monitoredNodeCount, onFindRelated,
   traceState, traceError, traceItems, traceStepCount,
   manualVersion, onManualVersionChange,
   manualLockArgs, onManualLockArgsChange,
@@ -4030,6 +4149,12 @@ function CommitmentTraceView({
   onCustomCodeHashChange: (v: string) => void
   txHash: string
   onTxHashChange: (v: string) => void
+  relatedState: 'idle' | 'searching' | 'done'
+  relatedChannels: RelatedChannel[]
+  traceAddressMatches: TraceAddressMatch[]
+  relatedFailedNodes: number
+  monitoredNodeCount: number
+  onFindRelated: () => void
   traceState: 'idle' | 'pending' | 'done' | 'error'
   traceError: string
   traceItems: TraceItem[]
@@ -4124,10 +4249,54 @@ function CommitmentTraceView({
                   {traceState === 'pending' ? t.tracing(traceStepCount) : 'Fetch & Trace'}
                 </button>
               </div>
+              <div className="smallNote">{t.relatedChannelHint}</div>
+              <button
+                className="btn btnGhost"
+                onClick={onFindRelated}
+                disabled={relatedState === 'searching' || monitoredNodeCount === 0 || !/^0x[0-9a-fA-F]{64}$/.test(txHash.trim())}
+                style={{ marginTop: 8 }}
+              >
+                {relatedState === 'searching' ? t.relatedChannelSearching : t.findRelatedChannels}
+              </button>
             </div>
           </div>
         </div>
       </section>
+
+      {relatedState !== 'idle' ? (
+        <section className="card">
+          <div className="cardHeader">
+            <div className="cardTitle">{t.relatedChannelsTitle}</div>
+            <div className="muted">{relatedState === 'searching' ? t.relatedChannelSearching : t.foundMatches(relatedChannels.length)}</div>
+          </div>
+          <div className="cardBody">
+            {relatedFailedNodes > 0 ? <div className="smallNote">{t.relatedChannelFailures(relatedFailedNodes)}</div> : null}
+            {relatedChannels.length > 0 ? (
+              <RelatedChannelRecords channels={relatedChannels} traceItems={traceItems} />
+            ) : relatedState === 'done' ? <div className="muted">{t.noRelatedChannels}</div> : null}
+            {traceAddressMatches.length > 0 ? (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>{t.relatedAddressHintsTitle}</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="table">
+                    <thead><tr><th>{t.relatedNode}</th><th>{t.relatedFundingAddress}</th><th>{t.relatedTracePosition}</th></tr></thead>
+                    <tbody>
+                      {traceAddressMatches.map((match) => (
+                        <tr key={match.nodeId}>
+                          <td>{match.nodeName}</td>
+                          <td><span className="monoSmall ctHashCopy" title={match.address} onClick={() => copyToClipboard(match.address)}>{match.address}</span></td>
+                          <td>{match.presence === 'both' ? t.relatedTraceBoth : match.presence === 'input' ? t.relatedTraceInput : t.relatedTraceOutput}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="smallNote">{t.relatedAddressHintCaveat}</div>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
 
       {traceState === 'error' ? (
         <section className="card">
@@ -4153,6 +4322,7 @@ function CommitmentTraceView({
                 key={item.tx_hash}
                 item={item}
                 index={index}
+                network={network}
                 isWitnessExpanded={expandedWitness.has(index)}
                 onToggleWitness={() => onToggleWitness(index)}
               />
@@ -4258,16 +4428,17 @@ function CommitmentTraceView({
 }
 
 function TraceItemCard({
-  item, index, isWitnessExpanded, onToggleWitness,
+  item, index, network, isWitnessExpanded, onToggleWitness,
 }: {
   item: TraceItem
   index: number
+  network: CkbNetwork
   isWitnessExpanded: boolean
   onToggleWitness: () => void
 }) {
   const { msg } = item
   return (
-    <div className="ctTraceItem">
+    <div className="ctTraceItem" id={`ct-tx-${item.tx_hash.toLowerCase()}`} tabIndex={-1}>
       <div className="ctTraceHeader">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="ctTraceIndex">#{index + 1}</span>
@@ -4343,6 +4514,7 @@ function TraceItemCard({
               <div className="monoSmall dim" title={c.args} style={{ fontSize: 10 }}>
                 {truncateHash(c.args, 10, 10)}
               </div>
+              <CellLockAddress lock={c.lock} network={network} />
             </div>
           ))}
         </div>
@@ -4361,6 +4533,7 @@ function TraceItemCard({
               <div className="monoSmall dim" title={c.args} style={{ fontSize: 10 }}>
                 {truncateHash(c.args, 10, 10)}
               </div>
+              <CellLockAddress lock={c.lock} network={network} />
             </div>
           ))}
         </div>
@@ -4383,6 +4556,22 @@ function TraceItemCard({
           ) : null}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+function CellLockAddress({
+  lock, network,
+}: {
+  lock?: { code_hash: string; hash_type: string; args: string }
+  network: CkbNetwork
+}) {
+  const t = useT()
+  const address = lock ? lockScriptToAddress(lock, network) : null
+  if (!address) return null
+  return (
+    <div className="monoSmall ctHashCopy" title={address} style={{ fontSize: 10 }} onClick={() => copyToClipboard(address)}>
+      {t.cellLockAddress}: {truncateHash(address, 14, 10)}
     </div>
   )
 }
@@ -4534,19 +4723,10 @@ function severityRowStyle(severity: TlcSeverity): React.CSSProperties | undefine
   return undefined
 }
 
-function formatChannelAmount(value: string | null, isUdt: boolean): string {
-  if (value == null) return '—'
-  try {
-    const amount = BigInt(value)
-    return isUdt ? `${amount.toString()} UDT` : `${formatCkbBalance(amount)} CKB`
-  } catch {
-    return value
-  }
-}
-
 function unlockLabel(kind: CommitmentUnlockKind, initiator: ForceCloseInitiator, t: Translations): string {
-  if ((kind === 'localBalance' || kind === 'remoteBalance') && initiator) {
-    return (kind === 'localBalance') === (initiator === 'local') ? t.fcUnlockLabels.ownBalance : t.fcUnlockLabels.peerBalance
+  const ourKind = ourWitnessBalanceKind(initiator)
+  if ((kind === 'localBalance' || kind === 'remoteBalance') && ourKind) {
+    return kind === ourKind ? t.fcUnlockLabels.ownBalance : t.fcUnlockLabels.peerBalance
   }
   return t.fcUnlockLabels[kind]
 }
@@ -4640,6 +4820,14 @@ function TlcMonitorTlcRow({ row, now }: { row: TlcRow; now: number }) {
             {assessment.reasons.map((r) => t.tlcReasonLabels[r]).join(' · ')}
           </span>
           {assessment.settledTxHash ? <CopyHash value={assessment.settledTxHash} /> : null}
+          {assessment.forwarding ? (
+            <div className="smallNote">
+              {t.tlcForwardingResults[assessment.forwarding.outcome]}
+              {'txHash' in assessment.forwarding ? (
+                <> · {formatChannelAmount(assessment.forwarding.amount, assessment.forwarding.isUdt)} · <CopyHash value={assessment.forwarding.txHash} /></>
+              ) : null}
+            </div>
+          ) : null}
           {!assessment.resolved && assessment.phase === 'onchainSettling' && assessment.claimableAt != null ? (
             <span className="dim" style={{ fontSize: 10 }}>{relativeClaimable(t, assessment.claimableAt, now)}</span>
           ) : null}
@@ -4672,8 +4860,12 @@ function ForceCloseRemaining({ row }: { row: ForceCloseRow }) {
         <>
           <span style={{ color: assessment.result === 'ownBalanceUnclaimed' ? 'var(--warn)' : undefined }}>
             {t.fcOurBalance(formatChannelAmount(assessment.ourAmount, channel.isUdt))}
+            {assessment.ourBalanceClaimed ? ` · ${t.fcBalanceClaimed}` : ''}
           </span>
-          <span>{t.fcTheirBalance(formatChannelAmount(assessment.theirAmount, channel.isUdt))}</span>
+          <span>
+            {t.fcTheirBalance(formatChannelAmount(assessment.theirAmount, channel.isUdt))}
+            {assessment.theirBalanceClaimed ? ` · ${t.fcBalanceClaimed}` : ''}
+          </span>
         </>
       ) : remaining ? (
         <>

@@ -31,9 +31,11 @@
 - TLC 监控视图（🛡 TLC 监控）：
   - 对所有节点并发（默认 10）调用 `node_info` + `list_channels`（`include_closed: true`），找出仍有 `pending_tlcs` 的 channel，以及处于强制关闭阶段的 channel（`ShuttingDown` + `WAITING_COMMITMENT_CONFIRMATION`，或 `Closed` + `UNCOOPERATIVE_*`）
   - TLC 表：逐条列出 TLC 所在节点、channel、方向、状态、金额、过期时间，标出它当前在链下还是链上（链下 · 通道正常 / 协商关闭中 / Stale，链上 · 等待 commitment 上链 / 结算中 / 已结算）以及判断原因；按「危险 / 警告 / 提示 / 正常」排序，可按需关注 / 未结 / 链下 / 链上 / 全部筛选
+  - 节点已处理移除的 TLC（如出站 `RemoteRemoved`）可在「全部」查看，不因过期计入「未结」或「需关注」。通道仍在链上结算不等于这笔 TLC 待退款；若链上仍锁有匹配的 HTLC 或已有领取交易，则按链上记录判断
   - 强制关闭表：通过 CKB RPC 从 funding outpoint 开始追踪 commitment 交易和之后的每一笔结算交易，展示发起方、commitment 交易与上链时间、可领取时间（commitment 上链时间 + delay）、每一步解锁了什么（HTLC preimage 领取 / 超时退回、本方 / 对方余额），以及仍锁在链上的余额、HTLC 和 capacity
-  - 扫描完成后自动检查 Fiber 认为仍在进行中的强制关闭 channel（同一 channel 5 分钟内不重复检查，已有最终结果的不再检查）；也可以单条「检查 / 重新检查」或「检查全部链上状态」。「追踪」会跳转到 Commitment Lock 视图并预填 funding 交易
-  - 判定阈值：安全窗口默认 160 分钟，对应 Fiber 默认 commitment delay（1 epoch ≈ 4h）的 2/3，也就是节点为出站 TLC 主动强制关闭的时间点。链下 TLC 已过期或剩余时间小于安全窗口为危险，小于窗口 + 60 分钟为警告；链上 TLC 已过期且已过 delay 仍未领取为警告，超出窗口为危险；强制关闭后本方余额在可领取 60 分钟后仍未领取为警告。链上实际是协商关闭、commitment 交易丢失等 Fiber 状态与链上不一致的情况也会标出
+  - 扫描完成后自动检查仍在进行中的强关通道，以及转发记录指向、已被节点标为结算完毕的强关出站通道（同一 channel 5 分钟内不重复检查，已有最终结果的不再检查）；也可以单条「检查 / 重新检查」或「检查全部链上状态」。「追踪」会跳转到 Commitment Lock 视图并预填 funding 交易
+  - 告警按当前节点判断。出站 TLC 由本方出资，链下已过期或进入安全窗口（默认 160 分钟）为危险，提前 60 分钟预警；链上已过期且经过 delay 仍未结算为警告，超过窗口为危险。入站由对方出资，仅因临期或过期显示提示，不等于已解决；涉及转发时，按本节点的转发通道、TLC 编号和支付哈希自动核对出站记录。能唯一匹配链上原像领取或超时退回时直接显示结论、出站金额和交易；仅标记移除、记录缺失或归属有歧义时标明结果未知。出站退款不等于入站已结。方向未知保留原告警等级，commitment 丢失、通道 Stale 等告警独立判断
+  - 强关余额按实际广播方区分：对方强关时，witness 的 `0xFF` 领取本方余额、`0xFE` 领取对方余额；本方强关时相反。超过领取宽限期（60 分钟）后，仅对方余额尚存不计入「本方余额超时未领取」。只有解析到相应余额的领取记录才标注「已领取」，余额为零本身不是领取证明
   - 安全窗口可调；自动重扫默认关闭，可选每 1 / 5 / 15 分钟。两项设置保存在 `localStorage`（键名 `fiber-nodes-monits:tlcMonitor`）
   - 存在危险项时，浏览器标签页标题前会加上 `(N) ⚠`，顶部导航按钮显示需关注的数量
   - testnet / mainnet 节点使用内置的公共 CKB RPC；节点在自定义链上时，需要在页面上填写 CKB RPC URL 才能做链上检查
@@ -52,6 +54,10 @@
   - **点击两节点之间的连线**：右侧打开**通道详情**；边上若合并了多条通道（虚线），会逐条列出 `channel_outpoint`、容量、费率（含 graph 中的节点1/节点2 费率）、UDT type script 等，并支持复制 outpoint 与端点公钥
 - Commitment Lock（链上 commitment 追踪）：
   - 面向 CKB 链上 Fiber **LN commitment** 相关交易：可选择 testnet / mainnet / 自定义 RPC 与 commitment **code hash**，输入交易哈希后拉取并解析 lock / witness，并展示链上步骤追踪（实现见 `src/lib/ckb.ts`）
+  - 输入 funding 或节点已知的 commitment 交易哈希时，可扫描监控节点的 `node_info` + `list_channels`（含关闭通道），关联 channel ID、funding outpoint、对端公钥与节点当前默认出资地址。Transaction Trace 完成后，还会用追踪交易的哈希、输入所花费的完整 outpoint 和已知 commitment 交易的花费关系再次匹配；也可单独点击「查找关联通道」
+  - 若追踪交易输入/输出的锁脚本与节点当前默认出资锁脚本一致，会单列地址线索；地址相同不等于通道归属或收款权证明
+  - 每个命中节点的通道记录默认展开，显示本次 `list_channels` 返回的全部字段（包括完整哈希、双方余额、每条 pending TLC 和版本新增字段），支持复制完整通道 JSON。点击「对照下方交易」的序号可直接跳到对应的 Transaction Trace 步骤
+  - 交易明细的输入/输出单元格显示可复制的锁脚本地址（testnet / mainnet）。节点当前默认出资地址不等于历史出资或结算收款地址；后续结算交易哈希、已清理通道或不可达节点可能找不到关联
   - 请求经同一 `/api/rpc` 代理发往 **CKB JSON-RPC** 端点（与 Fiber 节点 URL 无关）
 - Node Control（节点控制台）：
   - 需在左侧选中一个监控节点；提供分标签页的快捷表单，覆盖常见操作：`connect_peer`、`open_channel`、`new_invoice`、`send_payment`、`get_payment`、`get_invoice`、`shutdown_channel` 等（底层仍为 Fiber JSON-RPC）

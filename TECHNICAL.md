@@ -121,7 +121,7 @@ CKB 链交互与 **LN commitment** 解析 / 追踪：
   - 花费 funding 的交易没有 commitment lock 输出 → `cooperative`
   - 否则从 commitment cell 开始逐步查找花费交易并解析 witness，记录每一步的解锁内容（HTLC preimage / 超时、local / remote 余额）、区块时间和剩余未领取部分；commitment cell 仍为 live → `settling`，链上不再有 commitment lock 输出 → `settled`，遇到 revocation → `revoked`，找不到花费交易 → `untraceable`，最多追 32 步（超出时 `truncated`）
   - `delayMs` 由 commitment lock args 中的 delay epoch 换算（1 epoch 按 4 小时计）；可领取时间 = commitment 区块时间 + `delayMs`
-  - witness 里的 local / remote 是相对广播 commitment 的一方而言的；commitment code hash 传空字符串时按 lock args 长度（57 / 58 字节）识别 commitment 输出
+  - witness 字段是槽位，不是监控节点身份：第一项 `settlement_remote_amount`（`0xFE`）属广播方，第二项 `settlement_local_amount`（`0xFF`）属另一方。[Fiber v0.10.1 写入顺序](https://github.com/nervosnetwork/fiber/blob/d9b6bbd74faf5b168244e3ddea5b6762a04e0a71/crates/fiber-types/src/watchtower.rs#L99-L107)与[领取本方余额时的类型选择](https://github.com/nervosnetwork/fiber/blob/d9b6bbd74faf5b168244e3ddea5b6762a04e0a71/crates/fiber-lib/src/watchtower/actor.rs#L1563-L1572)相互印证。缓存的链上报告保留槽位原值，不存节点视角。commitment code hash 传空字符串时按 lock args 长度（57 / 58 字节）识别 commitment 输出
   - 传入上次的 `settling` 报告时，若其 live cell 仍未花费，只用 1 次 `get_live_cell` 就直接返回旧报告
 - `resolveNetworkConfig`：内置 testnet / mainnet 默认 RPC 与默认 commitment code hash；支持 custom RPC + 自定义 code hash
 
@@ -135,11 +135,11 @@ TLC 监控的数据模型与判定逻辑（纯函数，无 React 依赖）：
   - `channel_outpoint` 兼容对象、`0x…:index` 和 72 位十六进制（index 小端）三种形式
   - 已知 commitment 交易取 `shutdown_transaction_hash`，没有时取 `latest_commitment_transaction_hash`
 - `assessTlc`：给每个 TLC 定位置（`TlcPhase`）、级别和原因
-  - 链下已 `RemoveAckConfirmed`、在链上结算步骤中找到对应解锁（payment hash 前缀 + 金额匹配）、channel 已协商关闭 → 已解决
-  - 链下：已过期或剩余时间小于安全窗口为危险，小于窗口 + `WARNING_LEAD_MS`（1h）为警告；`Stale` channel 至少为警告（Fiber 不会自动处理）；首次出现超过 `LONG_PENDING_MS`（30 分钟）至少为提示
-  - 链上等待 commitment 确认：commitment 交易丢失或 TLC 已过期为危险
-  - 链上结算中：TLC 已过期，且超过 max(过期时间, 可领取时间) 的时长大于安全窗口为危险、大于 0 为警告；不在上链的 commitment 中视为已解决
-- `assessForceClose`：根据链上报告给出 `ForceCloseResult`、附注（Fiber 状态与链上不一致、仍有 HTLC 锁在链上、步骤截断、含危险 / 警告 TLC），以及按发起方换算的本方 / 对方剩余金额；可领取后超过 `CLAIM_GRACE_MS`（1h）本方余额仍未领取为 `ownBalanceUnclaimed`
+  - 匹配到链上解锁（payment hash 前缀 + 金额）优先显示领取方式和交易哈希。若匹配的 HTLC 仍在链上剩余列表，则继续监控，不以 RPC 的移除状态判断它已退款
+  - 出站 `RemoteRemoved` / `RemoveWaitPrevAck` / `RemoveWaitAck`、入站 `LocalRemoved` 表示节点已处理移除，但未记录最终 ACK；`RemoveAckConfirmed` 才是链下移除已确认。没有相反的链上证据时，移除记录不触发过期告警或计入未结；这不是链上领取凭据，也不改变强关通道的结算阶段
+  - 出站或方向未知：链下已过期或进入安全窗口为危险，提前 `WARNING_LEAD_MS`（1h）预警；等待 commitment 确认时过期为危险；链上结算超过 max(过期时间, 可领取时间) 后为警告，再超过安全窗口为危险
+  - 入站：同一时间条件仅作提示（出资方是对端），转发关联会按同一节点、链、出站通道、TLC 编号、完整支付哈希核对；存在反向引用时也须一致。用出站金额（不含转发费）、秒级到期时间、广播方对应的方向和 witness 哈希比对。如果能唯一匹配，分别标出下游原像领取或本方超时退款和交易哈希；仅出站退款解除转发警告，入站状态不随之改变。缺失或模糊证据不推断付款结果。过期不标记已解决。commitment 丢失、Stale 和已观察到的移除或链上领取按原规则独立判断
+- `assessForceClose`：余额列和领取明细使用同一个节点到 witness 槽位的映射。不明确是哪方强关时仅展示原始槽位。超过 `CLAIM_GRACE_MS`（1h）本方余额仍大于零才计入本方告警与金额；本方为零且对方仍有余额则标为 `peerBalanceUnclaimed`，继续追踪。余额为零且有对应正金额解锁步骤时才标「已领取」
 - `buildTlcMonitorData`：生成排好序的 TLC 行、强制关闭行和统计（危险数、需关注数、链下 / 链上未结 TLC、超时未领取的 CKB 等，UDT channel 不计入 CKB 合计）
 - `pruneTlcFirstSeen`：扫描成功的节点上已经消失的 TLC 会从首次出现时间表中删除
 - `loadTlcMonitorSettings` / `saveTlcMonitorSettings`：设置持久化在 `localStorage` 的 `fiber-nodes-monits:tlcMonitor`
@@ -292,6 +292,9 @@ Node 端的 Fiber JSON-RPC 代理：
    - 通过 `ckb.ts` 的 `callCkbRpc` 拉取交易，解析 lock args 与 witness
    - 调用 `getLnTxTrace` 生成逐步追踪列表，更新 `ctTraceItems` / `ctTraceState`
 3. 支持在未拉取交易的情况下，手动粘贴 lock args + witness 做本地解析（v1 / v2）
+4. 「查找关联通道」扫描监控节点的 `node_info` 和 `list_channels(include_closed: true)`。仅按输入哈希查找时，匹配 `channel_outpoint` 的 funding 交易哈希，或通道记录中的 `shutdown_transaction_hash` / `latest_commitment_transaction_hash`。Transaction Trace 完成后还将每笔 trace 交易哈希和输入花费的完整 outpoint 纳入匹配：完整 funding outpoint 优先；若 trace 花费某 funding 交易的一个输出，不把同笔交易的其他 channel 输出误判为命中；已知 commitment 哈希也可通过 trace 输入的前序交易哈希命中。并发上限 10，单节点失败不影响其他节点；testnet/mainnet 只展示同网络节点。关联结果展示 channel ID、outpoint、状态、对端公钥和当前 `default_funding_lock_script` 地址；同一锁脚本若出现在 trace 输入/输出，单列地址线索。地址线索不推断通道归属或收款权。
+
+5. 关联结果保留命中节点本次返回的完整 channel 对象。展示层遍历实际字段，金额换算、规范化 outpoint 和节点地址作为附加信息，不覆盖 RPC 原值。交易序号链接复用第 4 步的匹配规则逐笔计算，不再请求节点。
 
 ### 9. Node Control 视图
 
@@ -305,7 +308,7 @@ Node 端的 Fiber JSON-RPC 代理：
 
 1. `runTlcScan` 使用 `runWithConcurrency(nodes, 10, …)`，每个节点由 `scanNodeForTlcMonitor` 并行调用 `node_info` 和 `list_channels`（`include_closed: true`），失败的节点单独记录、不影响其他节点
 2. 每个 channel 经 `buildMonitoredChannel` 归类；全部完成后写入 `tlcScan`，并调用 `pruneTlcFirstSeen`
-3. 扫描结束后对 `forceClosing` / `settling` 阶段的 channel 以 `auto` 模式调用 `runTlcOnchainChecks`：
+3. 扫描结束后对 `forceClosing` / `settling` 阶段的 channel，以及被入站转发记录匹配到的 `settled` 出站 channel，以 `auto` 模式调用 `runTlcOnchainChecks`：
    - 按 `chain_hash` 判断网络（`detectNetworkByChainHash` + `resolveNetworkConfig`），自定义链使用页面上填写的 CKB RPC URL
    - `runWithConcurrency(jobs, 4, …)` 调用 `traceCommitmentSettlement`，结果按 `chain_hash|funding outpoint` 存入 `tlcChecks`；失败时保留上一次的报告并记录错误
    - 三种模式：`auto` 跳过已有最终结果（`settled` / `revoked` / `cooperative`）以及 `ONCHAIN_RECHECK_MS`（5 分钟）内检查过的 channel；`refresh`（「检查全部链上状态」）只跳过已有最终结果的；`force`（行内「检查 / 重新检查」）总是重新追踪
